@@ -252,12 +252,29 @@ def deduplicate_records(df, subset=None, keep='first', strategy='subset'):
     
     original_count = len(df)
     
+    # Create a working copy to avoid modifying original
+    df_work = df.copy()
+    
+    # Convert unhashable types (dicts, lists) to strings for deduplication
+    # This is necessary for JSON data with nested structures
+    for col in df_work.columns:
+        try:
+            # Check if column contains unhashable types (dicts or lists)
+            sample = df_work[col].dropna().head(1)
+            if not sample.empty:
+                first_val = sample.iloc[0]
+                if isinstance(first_val, (dict, list)):
+                    # Convert to string representation
+                    df_work[col] = df_work[col].astype(str)
+        except Exception:
+            pass
+    
     # Validate inputs
     if subset is not None:
         if isinstance(subset, str):
             subset = [subset]
         # Check if all columns exist
-        missing_cols = set(subset) - set(df.columns)
+        missing_cols = set(subset) - set(df_work.columns)
         if missing_cols:
             print(f"Warning: Columns {missing_cols} not found in DataFrame. Using all columns.")
             subset = None
@@ -270,7 +287,7 @@ def deduplicate_records(df, subset=None, keep='first', strategy='subset'):
     # Handle 'most_complete' strategy
     if keep == 'most_complete':
         # Reset index to track original order
-        df_work = df.reset_index(drop=True).copy()
+        df_work = df_work.reset_index(drop=True).copy()
         
         # Count non-null values per row
         df_work['_null_count'] = df_work.isna().sum(axis=1)
@@ -287,14 +304,14 @@ def deduplicate_records(df, subset=None, keep='first', strategy='subset'):
         dedup_df = dedup_df.drop(columns=['_null_count'])
     else:
         # Use standard pandas drop_duplicates
-        dedup_df = df.drop_duplicates(subset=subset, keep=keep)
+        dedup_df = df_work.drop_duplicates(subset=subset, keep=keep)
     
     final_count = len(dedup_df)
     duplicates_removed = original_count - final_count
     
     # Calculate number of duplicate groups
     if duplicates_removed > 0 and subset:
-        duplicate_groups = df.groupby(subset, dropna=False).size()
+        duplicate_groups = df_work.groupby(subset, dropna=False).size()
         duplicate_groups = (duplicate_groups > 1).sum()
     else:
         duplicate_groups = 0
