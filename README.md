@@ -22,7 +22,7 @@ Reads and standardizes data files, normalizing column names and format.
   - Geographic fields standardized to `latitude` and `longitude`
   - Count fields prefixed with `num_`
   - Boolean fields (0/1/true/false) prefixed with `is_`
-- **Final cleanup:** Removes special characters, collapses underscores, ensures uniqueness
+- **Final cleanup:** Normalizes/Removes special characters, collapses underscores, ensures uniqueness
 
 ---
 
@@ -77,8 +77,40 @@ dedup_df, stats = deduplicate_records(df, subset=['id', 'name'])
 ```python
 dedup_df, stats = deduplicate_records(df, subset='id', keep='most_complete')
 ```
+---
 
 ---
+
+### 3. Handle Missing Values (`handle_missing_values`)
+Flexible handling for missing data: drop rows/columns or impute values using several strategies.
+
+Function signature:
+```python
+handle_missing_values(df, drop_rows_subset=None, drop_cols_threshold=None, impute_strategy=None, impute_values=None)
+```
+
+Key options:
+- `drop_rows_subset`: column or list of columns — drop rows where any of these are missing (useful for required fields like `id`).
+- `drop_cols_threshold`: percentage (0-100) — drop columns with >= this percent missing (e.g., 80).
+- `impute_strategy`: mapping `col -> strategy` where strategy is one of `mean`, `median`, `mode`, `forward_fill`, `backward_fill`.
+- `impute_values`: mapping `col -> value` to fill missing values directly (takes precedence over strategies).
+
+Returns `(clean_df, stats)` where `stats` reports rows/cols dropped and cells imputed.
+
+Usage examples:
+```python
+from src.cleaning import handle_missing_values
+clean_df, stats = handle_missing_values(df, drop_rows_subset='id')
+clean_df, stats = handle_missing_values(df, drop_cols_threshold=80, impute_strategy={'age':'mean'})
+clean_df, stats = handle_missing_values(df, impute_values={'department':'Unknown'})
+```
+
+### Notes on `standardize_data` and JSON parsing
+- `standardize_data` accepts either a file path or a `pd.DataFrame` and now supports two useful flags:
+  - `trim_whitespace=True` (default) — strips leading/trailing whitespace from string-like columns.
+  - `casefold_values=False` (default) — when True applies `str.casefold()` for robust lowercasing.
+- `openfile()` reads JSON files with `encoding='utf-8-sig'` to handle BOMs, tries `pd.read_json(..., lines=True)` first, and falls back to line-by-line `json.loads()` while warning and skipping malformed lines.
+
 
 ## Interactive CLI Usage
 
@@ -101,5 +133,34 @@ python src/cleaning.py
 6. Optionally save deduplicated file to `data/processed/`
 
 ---
+
+#### Example: Interactive missing-values flow
+This short transcript shows the prompts you'll see when running option 3 (handle missing values):
+
+```
+$ python src/cleaning.py
+Select an action: 1(standardize), 2(deduplicate), 3(handle missing values), 4(exit) 3
+Selected file: data/raw/mydata.json
+
+Available columns: id, name, age, dept, salary
+Missing values summary:
+  age: 12 (2.4%)
+  dept: 50 (10.0%)
+
+Enter column(s) where missing values should drop rows (comma-separated, or press Enter to skip): id
+Enter threshold % to drop columns with missing values (0-100, or press Enter to skip): 80
+Impute missing values? (y/n): y
+Imputation strategies: mean, median, mode, forward_fill, backward_fill, or specific value
+Enter column:strategy pairs (e.g., 'age:mean,dept:Unknown', leave blank to skip): age:mean,dept:Unknown
+
+Missing Values Handling Summary:
+  Original rows: 500, Final rows: 498 (dropped 2)
+  Original columns: 12, Final columns: 12 (dropped 0)
+  Cells imputed: 62
+
+Save cleaned file? (y/n): y
+Wrote cleaned file to: data/processed/mydata_handled_missing.csv
+```
+
 
 

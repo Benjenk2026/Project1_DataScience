@@ -43,12 +43,16 @@ def openfile(file_path):
                     df = pd.read_json(p)
                 except ValueError:
                     rows = []
-                    with open(p, "r", encoding="utf-8") as f:
-                        for line in f:
+                    with open(p, "r", encoding="utf-8-sig") as f:
+                        for i, line in enumerate(f, 1):
                             line = line.strip()
                             if not line:
                                 continue
-                            rows.append(json.loads(line))
+                            try:
+                                rows.append(json.loads(line))
+                            except json.JSONDecodeError as je:
+                                print(f"Warning: JSON decode error on line {i}: {je}. Skipping line.")
+                                continue
                     df = pd.DataFrame(rows)
         elif extension in [".xlsx", ".xls"]:
             print("Reading Excel file...")
@@ -67,14 +71,22 @@ def openfile(file_path):
     return df
 
 
-def standardize_data(file_path, save=True, processed_dir="data/processed"):
+def standardize_data(file_path_or_df, save=True, processed_dir="data/processed", casefold_values=False, trim_whitespace=True):
     """Read and standardize the file at `file_path` then optionally save to `processed_dir`.
 
     Returns the standardized DataFrame or None on failure.
     """
-    df = openfile(file_path)
-    if df is None:
-        return None
+    # Allow passing either a path or an already-loaded DataFrame
+    file_path = None
+    if isinstance(file_path_or_df, (str, Path)):
+        file_path = file_path_or_df
+        df = openfile(file_path)
+        if df is None:
+            return None
+    else:
+        df = file_path_or_df
+        if df is None:
+            return None
 
     # Normalize column names to snake_case
     def to_snake_case(name: str) -> str:
@@ -90,6 +102,15 @@ def standardize_data(file_path, save=True, processed_dir="data/processed"):
     try:
         orig_cols = df.columns.astype(str).tolist()
         norm_cols = [to_snake_case(c) for c in orig_cols]
+
+        # Optionally trim whitespace from string-like values
+        if trim_whitespace:
+            try:
+                for col in df.columns:
+                    if pd.api.types.is_string_dtype(df[col]) or pd.api.types.is_object_dtype(df[col]):
+                        df[col] = df[col].where(df[col].isna(), df[col].astype(str).str.strip())
+            except Exception:
+                pass
 
         # Merge columns that normalize to the same snake_case name
         from collections import OrderedDict
@@ -178,13 +199,28 @@ def standardize_data(file_path, save=True, processed_dir="data/processed"):
         df.columns = final_names
     except Exception:
         pass
-
+    # Optionally case-fold string-like values for consistent textual normalization
+    if casefold_values:
+        try:
+            for col in df.columns:
+                # only attempt for object/string dtypes
+                if pd.api.types.is_string_dtype(df[col]) or pd.api.types.is_object_dtype(df[col]):
+                    try:
+                        df[col] = df[col].where(df[col].isna(), df[col].astype(str).str.casefold())
+                    except Exception:
+                        # fallback: convert to str then casefold where possible
+                        try:
+                            df[col] = df[col].astype(str).where(df[col].isna(), df[col].astype(str).str.casefold())
+                        except Exception:
+                            pass
+        except Exception:
+            pass
     print(f"Standardized data for file '{file_path}' with {len(df)} rows and {len(df.columns)} columns.")
 
     if save:
         out_dir = Path(processed_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        stem = Path(file_path).stem
+        stem = Path(file_path).stem if file_path else "dataframe"
         out_path = out_dir / f"{stem}_standardized.csv"
         try:
             df.to_csv(out_path, index=False, encoding='utf-8')
@@ -195,7 +231,7 @@ def standardize_data(file_path, save=True, processed_dir="data/processed"):
     return df
 
 
-def deduplicate_records(df, subset=None, keep='first', strategy='subset'):
+def deduplicate_records(df_or_path, subset=None, keep='first', strategy='subset'):
     """Deduplicate records from a DataFrame based on specified columns.
     
     Identifies and removes redundant rows that represent the same real-world entity
@@ -242,6 +278,19 @@ def deduplicate_records(df, subset=None, keep='first', strategy='subset'):
     # Keep the row with the most non-null values
     >>> dedup_df, stats = deduplicate_records(df, subset='id', keep='most_complete')
     """
+    # Accept either a DataFrame or a file path
+    if isinstance(df_or_path, (str, Path)):
+        df = openfile(df_or_path)
+        if df is None:
+            return None, {
+                'original_rows': 0,
+                'final_rows': 0,
+                'duplicates_removed': 0,
+                'duplicate_groups': 0
+            }
+    else:
+        df = df_or_path
+
     if df is None or df.empty:
         return df, {
             'original_rows': 0,
@@ -251,7 +300,7 @@ def deduplicate_records(df, subset=None, keep='first', strategy='subset'):
         }
     
     original_count = len(df)
-    
+
     # Create a working copy to avoid modifying original
     df_work = df.copy()
     
@@ -333,11 +382,207 @@ def deduplicate_records(df, subset=None, keep='first', strategy='subset'):
     return dedup_df, stats
 
 
+def handle_missing_values(df, drop_rows_subset=None, drop_cols_threshold=None, 
+                          impute_strategy=None, impute_values=None):
+    """Handle missing values in a DataFrame through dropping or imputation.
+    
+    Provides flexible strategies for handling missing data: removing rows/columns
+    or imputing missing values with defaults.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame with potential missing values.
+    drop_rows_subset : str, list, or None, default None
+        Column(s) where missing values trigger row deletion.
+        - If str: single column (e.g., 'id')
+        - If list: multiple columns (e.g., ['id', 'required_field'])
+        - If None: no rows dropped based on missing values
+        Example: drop_rows_subset='id' removes all rows with missing IDs
+    drop_cols_threshold : float, default None
+        Drop columns with missing value percentage >= threshold (0-100).
+        - If 50: drops columns with >=50% missing values
+        - If None: no columns dropped
+    impute_strategy : dict or None, default None
+        Dictionary mapping column names to imputation methods.
+        Methods: 'mean', 'median', 'mode', 'forward_fill', 'backward_fill'
+        Example: {'age': 'mean', 'category': 'mode', 'value': 'forward_fill'}
+    impute_values : dict or None, default None
+        Dictionary mapping column names to specific default values.
+        Takes precedence over impute_strategy.
+        Example: {'department': 'Unknown', 'status': 'Inactive'}
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with missing values handled.
+    dict
+        Summary statistics with keys:
+        - 'original_rows': rows before processing
+        - 'final_rows': rows after processing
+        - 'rows_dropped': number of rows removed
+        - 'cols_dropped': number of columns removed
+        - 'cells_imputed': number of values imputed
+    
+    Examples
+    --------
+    # Drop rows with missing ID
+    >>> df_clean, stats = handle_missing_values(df, drop_rows_subset='id')
+    
+    # Drop columns with >80% missing values
+    >>> df_clean, stats = handle_missing_values(df, drop_cols_threshold=80)
+    
+    # Impute age with mean, category with mode
+    >>> df_clean, stats = handle_missing_values(
+    ...     df, 
+    ...     impute_strategy={'age': 'mean', 'category': 'mode'}
+    ... )
+    
+    # Impute with specific values
+    >>> df_clean, stats = handle_missing_values(
+    ...     df, 
+    ...     drop_rows_subset='id',
+    ...     impute_values={'department': 'Unknown', 'salary': 0}
+    ... )
+    """
+    if df is None or df.empty:
+        return df, {
+            'original_rows': 0,
+            'final_rows': 0,
+            'rows_dropped': 0,
+            'cols_dropped': 0,
+            'cells_imputed': 0
+        }
+    
+    df_work = df.copy()
+    original_rows = len(df_work)
+    original_cols = len(df_work.columns)
+    cells_imputed = 0
+    
+    # Step 1: Drop rows with missing values in critical columns
+    if drop_rows_subset is not None:
+        if isinstance(drop_rows_subset, str):
+            drop_rows_subset = [drop_rows_subset]
+        
+        # Validate columns exist
+        valid_cols = [col for col in drop_rows_subset if col in df_work.columns]
+        if not valid_cols and drop_rows_subset:
+            print(f"Warning: Columns {set(drop_rows_subset) - set(df_work.columns)} not found.")
+        
+        if valid_cols:
+            rows_before = len(df_work)
+            # Drop rows where any of the specified columns have NaN
+            df_work = df_work.dropna(subset=valid_cols, how='any')
+            rows_dropped = rows_before - len(df_work)
+            print(f"  Dropped {rows_dropped} rows with missing values in {valid_cols}")
+        else:
+            rows_dropped = 0
+    else:
+        rows_dropped = 0
+    
+    # Step 2: Drop columns with high missing percentage
+    if drop_cols_threshold is not None:
+        if not (0 <= drop_cols_threshold <= 100):
+            print(f"Warning: drop_cols_threshold must be 0-100. Using None.")
+            drop_cols_threshold = None
+        else:
+            missing_pct = (df_work.isna().sum() / len(df_work)) * 100
+            cols_to_drop = missing_pct[missing_pct >= drop_cols_threshold].index.tolist()
+            if cols_to_drop:
+                df_work = df_work.drop(columns=cols_to_drop)
+                print(f"  Dropped {len(cols_to_drop)} columns with >={drop_cols_threshold}% missing: {cols_to_drop}")
+            cols_dropped = len(cols_to_drop)
+        if drop_cols_threshold is None:
+            cols_dropped = 0
+    else:
+        cols_dropped = 0
+    
+    # Step 3: Impute missing values with specific values
+    if impute_values is not None:
+        for col, fill_value in impute_values.items():
+            if col in df_work.columns:
+                missing_count = df_work[col].isna().sum()
+                if missing_count > 0:
+                    df_work[col].fillna(fill_value, inplace=True)
+                    cells_imputed += missing_count
+                    print(f"  Imputed {missing_count} missing values in '{col}' with '{fill_value}'")
+    
+    # Step 4: Impute missing values with statistical measures
+    if impute_strategy is not None:
+        for col, strategy in impute_strategy.items():
+            if col not in df_work.columns:
+                print(f"Warning: Column '{col}' not found. Skipping imputation.")
+                continue
+            
+            missing_count = df_work[col].isna().sum()
+            if missing_count == 0:
+                continue
+            
+            try:
+                if strategy == 'mean':
+                    fill_value = df_work[col].mean()
+                    df_work[col].fillna(fill_value, inplace=True)
+                    print(f"  Imputed {missing_count} missing values in '{col}' with mean ({fill_value:.2f})")
+                
+                elif strategy == 'median':
+                    fill_value = df_work[col].median()
+                    df_work[col].fillna(fill_value, inplace=True)
+                    print(f"  Imputed {missing_count} missing values in '{col}' with median ({fill_value:.2f})")
+                
+                elif strategy == 'mode':
+                    fill_value = df_work[col].mode()[0] if not df_work[col].mode().empty else None
+                    if fill_value is not None:
+                        df_work[col].fillna(fill_value, inplace=True)
+                        print(f"  Imputed {missing_count} missing values in '{col}' with mode ({fill_value})")
+                
+                elif strategy == 'forward_fill':
+                    df_work[col].fillna(method='ffill', inplace=True)
+                    still_missing = df_work[col].isna().sum()
+                    imputed_count = missing_count - still_missing
+                    df_work[col].fillna(method='bfill', inplace=True)
+                    still_missing = df_work[col].isna().sum()
+                    imputed_count = missing_count - still_missing
+                    print(f"  Imputed {imputed_count} missing values in '{col}' with forward fill")
+                
+                elif strategy == 'backward_fill':
+                    df_work[col].fillna(method='bfill', inplace=True)
+                    still_missing = df_work[col].isna().sum()
+                    imputed_count = missing_count - still_missing
+                    print(f"  Imputed {imputed_count} missing values in '{col}' with backward fill")
+                
+                else:
+                    print(f"Warning: Unknown imputation strategy '{strategy}' for column '{col}'")
+                    continue
+                
+                cells_imputed += missing_count - df_work[col].isna().sum()
+            
+            except Exception as e:
+                print(f"Warning: Could not impute '{col}' with strategy '{strategy}': {e}")
+    
+    final_rows = len(df_work)
+    final_cols = len(df_work.columns)
+    
+    stats = {
+        'original_rows': original_rows,
+        'final_rows': final_rows,
+        'rows_dropped': rows_dropped,
+        'cols_dropped': cols_dropped,
+        'cells_imputed': cells_imputed
+    }
+    
+    print(f"\nMissing Values Handling Summary:")
+    print(f"  Original rows: {original_rows}, Final rows: {final_rows} (dropped {rows_dropped})")
+    print(f"  Original columns: {original_cols}, Final columns: {final_cols} (dropped {cols_dropped})")
+    print(f"  Cells imputed: {cells_imputed}")
+    
+    return df_work, stats
+
+
 if __name__ == "__main__":
     print("==========================")
     print("Data Cleaning Utility")
     print("==========================") 
-    action = input("Select an action: 1(standardize), 2(deduplicate), 3(exit) ").strip()
+    action = input("Select an action: 1(standardize), 2(deduplicate), 3(handle missing values), 4(exit) ").strip()
     
     #call standardization function
     if action == "1":
@@ -388,6 +633,82 @@ if __name__ == "__main__":
                     print(f"Failed to write deduplicated file: {e}")
     
     elif action == "3":
+        file_path = select_file()
+        if not file_path:
+            print("No file selected. Exiting.")
+            sys.exit(0)
+        else:
+            print(f"Selected file: {file_path}")
+            df = openfile(file_path)
+            if df is None:
+                print("Failed to load file.")
+                sys.exit(0)
+            
+            print(f"\nAvailable columns: {', '.join(df.columns.tolist())}")
+            print(f"Missing values summary:")
+            missing_summary = df.isna().sum()
+            for col in missing_summary[missing_summary > 0].index:
+                pct = (missing_summary[col] / len(df)) * 100
+                print(f"  {col}: {missing_summary[col]} ({pct:.1f}%)")
+            
+            drop_rows_input = input("\nEnter column(s) where missing values should drop rows (comma-separated, or press Enter to skip): ").strip()
+            drop_rows_subset = [col.strip() for col in drop_rows_input.split(',')] if drop_rows_input else None
+            
+            drop_cols_input = input("Enter threshold % to drop columns with missing values (0-100, or press Enter to skip): ").strip()
+            drop_cols_threshold = float(drop_cols_input) if drop_cols_input else None
+            
+            impute_choice = input("Impute missing values? (y/n): ").strip().lower()
+            impute_strategy = None
+            impute_values = None
+            
+            if impute_choice == 'y':
+                print("Imputation strategies: mean, median, mode, forward_fill, backward_fill, or specific value")
+                impute_input = input("Enter column:strategy pairs (e.g., 'age:mean,dept:Unknown', leave blank to skip): ").strip()
+                
+                if impute_input:
+                    impute_strategy = {}
+                    impute_values = {}
+                    pairs = impute_input.split(',')
+                    for pair in pairs:
+                        if ':' in pair:
+                            col, strategy = pair.split(':', 1)
+                            col = col.strip()
+                            strategy = strategy.strip()
+                            
+                            # Check if it's a numeric value for direct imputation
+                            try:
+                                # Try to convert to number
+                                num_val = float(strategy)
+                                impute_values[col] = num_val
+                            except ValueError:
+                                # It's a strategy or string value
+                                if strategy in ['mean', 'median', 'mode', 'forward_fill', 'backward_fill']:
+                                    impute_strategy[col] = strategy
+                                else:
+                                    # Treat as a string value to impute
+                                    impute_values[col] = strategy
+            
+            clean_df, stats = handle_missing_values(
+                df, 
+                drop_rows_subset=drop_rows_subset,
+                drop_cols_threshold=drop_cols_threshold,
+                impute_strategy=impute_strategy,
+                impute_values=impute_values
+            )
+            
+            save_choice = input("\nSave cleaned file? (y/n): ").strip().lower()
+            if save_choice == 'y':
+                out_dir = Path("data/processed")
+                out_dir.mkdir(parents=True, exist_ok=True)
+                stem = Path(file_path).stem
+                out_path = out_dir / f"{stem}_handled_missing.csv"
+                try:
+                    clean_df.to_csv(out_path, index=False, encoding='utf-8')
+                    print(f"Wrote cleaned file to: {out_path}")
+                except Exception as e:
+                    print(f"Failed to write cleaned file: {e}")
+    
+    elif action == "4":
         print("Exiting.")
         sys.exit(0)
  
