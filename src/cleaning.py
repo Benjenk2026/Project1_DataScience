@@ -195,12 +195,132 @@ def standardize_data(file_path, save=True, processed_dir="data/processed"):
     return df
 
 
+def deduplicate_records(df, subset=None, keep='first', strategy='subset'):
+    """Deduplicate records from a DataFrame based on specified columns.
+    
+    Identifies and removes redundant rows that represent the same real-world entity
+    or event.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The input DataFrame to deduplicate.
+    subset : str, list, or None, default None
+        Column(s) to consider for identifying duplicate rows.
+        - If None: uses all columns
+        - If str: a single column name (e.g., 'id')
+        - If list: multiple column names (e.g., ['id', 'name'])
+    keep : {'first', 'last', 'most_complete'}, default 'first'
+        Which duplicate row to keep:
+        - 'first': keeps the first occurrence
+        - 'last': keeps the last occurrence
+        - 'most_complete': keeps the row with the fewest NaN/null values
+    strategy : {'subset', 'approximate'}, default 'subset'
+        Deduplication strategy:
+        - 'subset': exact duplicate matching on specified columns
+        - 'approximate': can be extended for fuzzy matching (placeholder)
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with duplicate rows removed.
+    dict
+        Summary statistics with keys:
+        - 'original_rows': number of rows before deduplication
+        - 'final_rows': number of rows after deduplication
+        - 'duplicates_removed': number of duplicate rows removed
+        - 'duplicate_groups': number of groups with duplicates
+    
+    Examples
+    --------
+    # Remove rows with duplicate 'id'
+    >>> dedup_df, stats = deduplicate_records(df, subset='id')
+    
+    # Remove rows with duplicate 'id' and 'name' combinations
+    >>> dedup_df, stats = deduplicate_records(df, subset=['id', 'name'])
+    
+    # Keep the row with the most non-null values
+    >>> dedup_df, stats = deduplicate_records(df, subset='id', keep='most_complete')
+    """
+    if df is None or df.empty:
+        return df, {
+            'original_rows': 0,
+            'final_rows': 0,
+            'duplicates_removed': 0,
+            'duplicate_groups': 0
+        }
+    
+    original_count = len(df)
+    
+    # Validate inputs
+    if subset is not None:
+        if isinstance(subset, str):
+            subset = [subset]
+        # Check if all columns exist
+        missing_cols = set(subset) - set(df.columns)
+        if missing_cols:
+            print(f"Warning: Columns {missing_cols} not found in DataFrame. Using all columns.")
+            subset = None
+    
+    # Validate keep parameter
+    if keep not in ['first', 'last', 'most_complete']:
+        print(f"Warning: keep='{keep}' not recognized. Using 'first'.")
+        keep = 'first'
+    
+    # Handle 'most_complete' strategy
+    if keep == 'most_complete':
+        # Reset index to track original order
+        df_work = df.reset_index(drop=True).copy()
+        
+        # Count non-null values per row
+        df_work['_null_count'] = df_work.isna().sum(axis=1)
+        
+        if subset:
+            # For each duplicate group, keep the row with fewest nulls
+            dedup_df = df_work.loc[
+                df_work.groupby(subset, dropna=False)['_null_count'].idxmin()
+            ]
+        else:
+            # Not really useful for 'most_complete' with no subset
+            dedup_df = df_work.loc[df_work['_null_count'].idxmin()]
+        
+        dedup_df = dedup_df.drop(columns=['_null_count'])
+    else:
+        # Use standard pandas drop_duplicates
+        dedup_df = df.drop_duplicates(subset=subset, keep=keep)
+    
+    final_count = len(dedup_df)
+    duplicates_removed = original_count - final_count
+    
+    # Calculate number of duplicate groups
+    if duplicates_removed > 0 and subset:
+        duplicate_groups = df.groupby(subset, dropna=False).size()
+        duplicate_groups = (duplicate_groups > 1).sum()
+    else:
+        duplicate_groups = 0
+    
+    stats = {
+        'original_rows': original_count,
+        'final_rows': final_count,
+        'duplicates_removed': duplicates_removed,
+        'duplicate_groups': duplicate_groups
+    }
+    
+    print(f"\nDeduplication Summary:")
+    print(f"  Original rows: {original_count}")
+    print(f"  Final rows: {final_count}")
+    print(f"  Duplicates removed: {duplicates_removed}")
+    if duplicate_groups > 0:
+        print(f"  Duplicate groups found: {duplicate_groups}")
+    
+    return dedup_df, stats
+
 
 if __name__ == "__main__":
     print("==========================")
     print("Data Cleaning Utility")
     print("==========================") 
-    action = input("Select an action 1(standarize), 2(exit) ").strip()
+    action = input("Select an action: 1(standardize), 2(deduplicate), 3(exit) ").strip()
     
     #call standardization function
     if action == "1":
@@ -213,6 +333,44 @@ if __name__ == "__main__":
             standardize_data(file_path)
     
     elif action == "2":
+        file_path = select_file()
+        if not file_path:
+            print("No file selected. Exiting.")
+            sys.exit(0)
+        else:
+            print(f"Selected file: {file_path}")
+            df = openfile(file_path)
+            if df is None:
+                print("Failed to load file.")
+                sys.exit(0)
+            
+            print(f"\nAvailable columns: {', '.join(df.columns.tolist())}")
+            subset_input = input("Enter column(s) to check for duplicates (comma-separated, or press Enter for all columns): ").strip()
+            
+            if subset_input:
+                subset = [col.strip() for col in subset_input.split(',')]
+            else:
+                subset = None
+            
+            keep_input = input("Keep strategy - 1(first), 2(last), 3(most_complete): ").strip()
+            keep_map = {'1': 'first', '2': 'last', '3': 'most_complete'}
+            keep = keep_map.get(keep_input, 'first')
+            
+            dedup_df, stats = deduplicate_records(df, subset=subset, keep=keep)
+            
+            save_choice = input("\nSave deduplicated file? (y/n): ").strip().lower()
+            if save_choice == 'y':
+                out_dir = Path("data/processed")
+                out_dir.mkdir(parents=True, exist_ok=True)
+                stem = Path(file_path).stem
+                out_path = out_dir / f"{stem}_deduplicated.csv"
+                try:
+                    dedup_df.to_csv(out_path, index=False, encoding='utf-8')
+                    print(f"Wrote deduplicated file to: {out_path}")
+                except Exception as e:
+                    print(f"Failed to write deduplicated file: {e}")
+    
+    elif action == "3":
         print("Exiting.")
         sys.exit(0)
  
