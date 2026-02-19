@@ -26,7 +26,6 @@ def select_file(filetypes=None, title="Select file"):
 
 
 def openfile(file_path):
-    print("Standardizing data...")
     # Ensure we have a Path object so we can safely access `.suffix`
     p = Path(file_path) if not isinstance(file_path, Path) else file_path
     if isinstance(p, Path) and not p.exists():
@@ -215,7 +214,8 @@ def standardize_data(file_path_or_df, save=True, processed_dir="data/processed",
                             pass
         except Exception:
             pass
-    print(f"Standardized data for file '{file_path}' with {len(df)} rows and {len(df.columns)} columns.")
+    file_label = file_path if file_path else "DataFrame"
+    print(f"Standardized data for file '{file_label}' with {len(df)} rows and {len(df.columns)} columns.")
 
     if save:
         out_dir = Path(processed_dir)
@@ -231,7 +231,7 @@ def standardize_data(file_path_or_df, save=True, processed_dir="data/processed",
     return df
 
 
-def deduplicate_records(df_or_path, subset=None, keep='first', strategy='subset'):
+def deduplicate_records(df_or_path, subset=None, keep='first', strategy='subset', verbose=True):
     """Deduplicate records from a DataFrame based on specified columns.
     
     Identifies and removes redundant rows that represent the same real-world entity
@@ -372,12 +372,13 @@ def deduplicate_records(df_or_path, subset=None, keep='first', strategy='subset'
         'duplicate_groups': duplicate_groups
     }
     
-    print(f"\nDeduplication Summary:")
-    print(f"  Original rows: {original_count}")
-    print(f"  Final rows: {final_count}")
-    print(f"  Duplicates removed: {duplicates_removed}")
-    if duplicate_groups > 0:
-        print(f"  Duplicate groups found: {duplicate_groups}")
+    if verbose:
+        print(f"Deduplication Summary:")
+        print(f"  Original rows: {original_count}")
+        print(f"  Final rows: {final_count}")
+        print(f"  Duplicates removed: {duplicates_removed}")
+        if duplicate_groups > 0:
+            print(f"  Duplicate groups found: {duplicate_groups}")
     
     return dedup_df, stats
 

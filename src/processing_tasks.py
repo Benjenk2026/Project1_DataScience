@@ -124,9 +124,9 @@ def run_processing(
 
     # Minimal missing handling
     if "service_request_id" in df311.columns:
-        df311, _ = deduplicate_records(df311, subset=["service_request_id"], keep="most_complete")
+        df311, _ = deduplicate_records(df311, subset=["service_request_id"], keep="most_complete", verbose=False)
     if "business_id" in dfy.columns:
-        dfy, _ = deduplicate_records(dfy, subset=["business_id"], keep="most_complete")
+        dfy, _ = deduplicate_records(dfy, subset=["business_id"], keep="most_complete", verbose=False)
 
     # Process
     df311 = process_311(df311)

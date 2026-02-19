@@ -1,1 +1,2 @@
-
+service_request_id,subject,status,service_name,requested_datetime,zipcode,complaint_latitude,complaint_longitude,business_id,business_name,business_categories,business_stars,business_review_count,business_latitude,business_longitude,match_distance_m,radius_m
+17357879,What day is trash/recycling collection in my neighborhood?,Closed,Information Request,2025-01-07 22:59:54+00,,34.4266787,-119.7111968,Pns2l4eNsfO8kk83dixA6A,"Abby Rappoport, LAC, CMQ","Doctors, Traditional Chinese Medicine, Naturopathic/Holistic, Acupuncture, Health & Medical, Nutritionists",5.0,,34.4266787,-119.7111968,0.0,300

@@ -7,6 +7,7 @@ from .cleaning import openfile, standardize_data, handle_missing_values, dedupli
 
 EARTH_RADIUS_M = 6371000.0
 
+# Haversine distance in meters between two points given as lat/lon in degrees
 def haversine_m(lat1, lon1, lat2, lon2):
     # expects numpy arrays in degrees
     lat1 = np.radians(lat1); lon1 = np.radians(lon1)
@@ -16,6 +17,7 @@ def haversine_m(lat1, lon1, lat2, lon2):
     a = np.sin(dlat/2.0)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2.0)**2
     return 2.0 * EARTH_RADIUS_M * np.arcsin(np.sqrt(a))
 
+# Basic coordinate cleaning: convert to numeric, drop invalid ranges
 def clean_coords(df, lat_col="latitude", lon_col="longitude"):
     df = df.copy()
     df[lat_col] = pd.to_numeric(df[lat_col], errors="coerce")
@@ -23,34 +25,55 @@ def clean_coords(df, lat_col="latitude", lon_col="longitude"):
     df = df[df[lat_col].between(-90, 90) & df[lon_col].between(-180, 180)]
     return df
 
+# Main integration function
 def integrate_geospatial(
     path_311="data/raw/test_data.xlsx",
     path_yelp="data/raw/yelp_JSON_test.json",
     radius_m=300
 ):
-    # Load + standardize
+    # Load using openfile from cleaning.py
     df311_raw = openfile(path_311)
     dfy_raw = openfile(path_yelp)
 
+    #uses standardize_data from cleaning.py
+    print()
+    print("STARDNARDIZING DATA")
+    print('===============================')
     df311 = standardize_data(df311_raw, save=False)
     dfy = standardize_data(dfy_raw, save=False)
+    print()
 
-    # Ensure column names match what we expect (your doc shows lat/lon for 311) :contentReference[oaicite:3]{index=3}
-    # cleaning.standardize_data already converts lat/lon -> latitude/longitude :contentReference[oaicite:4]{index=4}
 
-    # Basic missing handling
+    # Ensure column names match what we expect (your doc shows lat/lon for 311) 
+    # cleaning.standardize_data already converts lat/lon -> latitude/longitude 
+
+    # Basic missing handling using handle_missing_values from cleaning.py, dropping rows missing critical geospatial info
+    print("HANDLING MISSING VALUES")
+    print('===============================')
     df311, _ = handle_missing_values(df311, drop_rows_subset=["latitude", "longitude"])
     dfy, _ = handle_missing_values(dfy, drop_rows_subset=["latitude", "longitude", "business_id"])
+    print()
 
-    # Optional: dedupe
-    if "service_request_id" in df311.columns:
-        df311, _ = deduplicate_records(df311, subset=["service_request_id"], keep="most_complete")
-    if "business_id" in dfy.columns:
-        dfy, _ = deduplicate_records(dfy, subset=["business_id"], keep="most_complete")
-
-    # Coordinate validation
+    # Deduplicate records based on unique identifiers (service_request_id for 311, business_id for Yelp) using deduplicate_records from cleaning.py
+    #if "service_request_id" in df311.columns: 
+    # if "business_id" in dfy.columns:
+    print("DEDUPLICATING RECORDS")
+    print('===============================')
+    print(f"Deduplicating 311 records based on 'service_request_id'...")
+    df311, _ = deduplicate_records(df311, subset=["service_request_id"], keep="most_complete", verbose=True)
+    print()
+    print(f"Deduplicating Yelp records based on 'business_id'...")
+    dfy, _ = deduplicate_records(dfy, subset=["business_id"], keep="most_complete", verbose=True)
+    print()
+    
+    print("CLEANING COORDINATES")
+    print('===============================')
     df311 = clean_coords(df311)
     dfy = clean_coords(dfy)
+    print()
+
+    
+
 
     # Prepare output rows
     y_lat = dfy["latitude"].to_numpy()
@@ -65,6 +88,7 @@ def integrate_geospatial(
         j = int(np.argmin(dists))
         best_dist = float(dists[j])
 
+        # Only consider it a match if within radius_m(300m ~ 0.3km)
         if best_dist <= radius_m:
             y = dfy.iloc[j]
             out = {
@@ -95,7 +119,7 @@ def integrate_geospatial(
 
     integrated = pd.DataFrame(matched_rows)
 
-    # Save
+    # Save integrated dataset
     out_dir = Path("data/processed")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "integrated_dataset.csv"
@@ -114,5 +138,9 @@ def integrate_geospatial(
     return integrated, stats
 
 if __name__ == "__main__":
+    print ('================================')
+    print("RUNNING GEOSPATIAL INTEGRATION")
+    print()
     integrated, stats = integrate_geospatial()
-    print("Integration complete:", stats)
+    print("INTEGRATION COMPLETE : ", stats)
+    print()

@@ -162,5 +162,25 @@ Save cleaned file? (y/n): y
 Wrote cleaned file to: data/processed/mydata_handled_missing.csv
 ```
 
+---
+
+## Geospatial Integration (`data_integration.py`)
+
+This module provides a simple geospatial join between 311 complaint records and Yelp business locations.
+
+Key functionality:
+- `integrate_geospatial(path_311, path_yelp, radius_m=300)` — finds the nearest Yelp business for each 311 complaint within `radius_m` meters and writes a joined CSV to `data/processed/integrated_dataset.csv`.
+- Uses a Haversine distance (`haversine_m`) to compute distances in meters between latitude/longitude pairs.
+- Performs standardization, missing-value handling, and deduplication (via `src/cleaning.py`) before matching.
+
+Outputs:
+- `data/processed/integrated_dataset.csv` — matched rows with fields from both sources plus `match_distance_m` and `radius_m`.
+- The function also returns `(integrated_df, stats)` where `stats` includes row counts and match-rate.
+
+Example usage (run from repo root):
+```bash
+python -m src.data_integration
+```
+
 
 
