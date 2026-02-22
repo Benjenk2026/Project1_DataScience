@@ -13,8 +13,9 @@ import re
 def select_file(filetypes=None, title="Select file"):
     if filetypes is None:
         filetypes = [
-            ("Excel or JSON", ("*.xlsx", "*.xls", "*.json")),
+            ("Excel, CSV, or JSON", ("*.xlsx", "*.xls", "*.csv", "*.json")),
             ("Excel files", ("*.xlsx", "*.xls")),
+            ("CSV files", "*.csv"),
             ("JSON files", "*.json"),
             ("All files", "*.*"),
         ]
@@ -56,6 +57,9 @@ def openfile(file_path):
         elif extension in [".xlsx", ".xls"]:
             print("Reading Excel file...")
             df = pd.read_excel(p)
+        elif extension == ".csv":
+            print("Reading CSV file...")
+            df = pd.read_csv(p)
         else:
             # Fallback: try common pandas readers
             try:
@@ -655,7 +659,26 @@ if __name__ == "__main__":
             drop_rows_input = input("\nEnter column(s) where missing values should drop rows (comma-separated, or press Enter to skip): ").strip()
             drop_rows_subset = [col.strip() for col in drop_rows_input.split(',')] if drop_rows_input else None
             
-            drop_cols_input = input("Enter threshold % to drop columns with missing values (0-100, or press Enter to skip): ").strip()
+            # Summary after drop_rows selection
+            if drop_rows_subset:
+                print(f"\n→ Will drop rows with missing values in: {', '.join(drop_rows_subset)}")
+                # Actually drop the rows and update the dataframe
+                df = df.dropna(subset=drop_rows_subset, how='any')
+                print(f"→ Dropped rows. New total: {len(df)} rows")
+                
+                # Print updated missing values summary after dropping rows
+                print(f"\nUpdated missing values summary:")
+                missing_summary = df.isna().sum()
+                if missing_summary.sum() == 0:
+                    print("  (No missing values remaining)")
+                else:
+                    for col in missing_summary[missing_summary > 0].index:
+                        pct = (missing_summary[col] / len(df)) * 100
+                        print(f"  {col}: {missing_summary[col]} ({pct:.1f}%)")
+            else:
+                print("\n→ No columns selected for row dropping (will skip this step)")
+            
+            drop_cols_input = input("\nEnter threshold % to drop columns with missing values (0-100, or press Enter to skip): ").strip()
             drop_cols_threshold = float(drop_cols_input) if drop_cols_input else None
             
             impute_choice = input("Impute missing values? (y/n): ").strip().lower()
@@ -691,7 +714,7 @@ if __name__ == "__main__":
             
             clean_df, stats = handle_missing_values(
                 df, 
-                drop_rows_subset=drop_rows_subset,
+                drop_rows_subset=None,
                 drop_cols_threshold=drop_cols_threshold,
                 impute_strategy=impute_strategy,
                 impute_values=impute_values
