@@ -4,7 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import pandas as pd
-
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
+import argparse
+import joblib
 from .cleaning import openfile, standardize_data, handle_missing_values, deduplicate_records
 
 # -----------------------------
@@ -124,15 +129,15 @@ def run_processing(
 
     # Minimal missing handling
     if "service_request_id" in df311.columns:
-        df311, _ = deduplicate_records(df311, subset=["service_request_id"], keep="most_complete", verbose=False)
+        df311, _ = deduplicate_records(df311, subset=["service_request_id"], keep="most_complete")
     if "business_id" in dfy.columns:
-        dfy, _ = deduplicate_records(dfy, subset=["business_id"], keep="most_complete", verbose=False)
+        dfy, _ = deduplicate_records(dfy, subset=["business_id"], keep="most_complete")
 
     # Process
     df311 = process_311(df311)
     dfy = process_yelp(dfy)
 
-    # Save
+    # Save 
     out_dir = Path("data/processed")
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -145,5 +150,83 @@ def run_processing(
 
     return df311, dfy
 
-if __name__ == "__main__":
-    run_processing()
+def classify_complaints(path: str):
+    # -----------------------------
+    # 1. LOAD MULTIPLE FILES
+    # -----------------------------
+
+    file_paths = [
+    "complaints1.xlsx",
+    "complaints2.json"
+]
+
+    dataframes = []
+
+    for path in file_paths:
+        df = openfile(path)   # using imported function
+        if df is not None:
+            dataframes.append(df)
+
+    if not dataframes:
+        raise ValueError("No valid files loaded.")
+
+    df = pd.concat(dataframes, ignore_index=True)
+
+    # -----------------------------
+    # 2. VALIDATE REQUIRED COLUMNS
+    # -----------------------------
+
+    required_cols = ["text", "category"]
+
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    df = df[required_cols].dropna()
+
+    # -----------------------------
+    # 3. SPLIT DATA
+    # -----------------------------
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        df["text"],
+        df["category"],
+        test_size=0.2,
+        random_state=42
+    )
+
+    # -----------------------------
+    # 4. TEXT VECTORIZATION
+    # -----------------------------
+
+    vectorizer = TfidfVectorizer(stop_words="english")
+
+    X_train_vec = vectorizer.fit_transform(X_train)
+    X_test_vec = vectorizer.transform(X_test)
+
+    # -----------------------------
+    # 5. TRAIN MODEL
+    # -----------------------------
+
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X_train_vec, y_train)
+
+    # -----------------------------
+    # 6. EVALUATE
+    # -----------------------------
+
+    predictions = model.predict(X_test_vec)
+    accuracy = accuracy_score(y_test, predictions)
+
+    print("Model Accuracy:", accuracy)
+
+    # -----------------------------
+    # 7. PREDICT NEW TEXT
+    # -----------------------------
+
+    new_complaint = ["I was charged twice for my order"]
+
+    new_vec = vectorizer.transform(new_complaint)
+    prediction = model.predict(new_vec)
+
+    print("Predicted Category:", prediction[0])
