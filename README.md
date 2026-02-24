@@ -381,4 +381,59 @@ Returns a per-row summary function fitted on a training corpus. No LLMs — pure
 summarize_311  = build_summarizer(fit_df["_text"])   # fitted on 311 training sample
 summarize_yelp = build_summarizer(train_df["text"])  # fitted on Yelp review sample
 
+```
 
+## Hotspot Analysis (`src/hotspot.py`)
+
+This module generates interactive hotspot maps from enriched complaint/review datasets in `data/processed`.
+
+### Supported Inputs
+- `311_enriched.csv`
+- `yelp_reviews_enriched.csv`
+- Or both combined in one run
+
+### Run Commands
+From the project root:
+
+```bash
+python src/hotspot.py --source 311
+python src/hotspot.py --source yelp
+python src/hotspot.py --source both
+```
+
+Optional:
+```bash
+python src/hotspot.py --source both --data-dir data/processed
+```
+
+### Output Files (for `--source both`)
+
+- `heatmap_both.html`
+  - **Purpose:** Shows a continuous density heatmap of all valid coordinates.
+  - **Best use:** Quickly identifies broad geographic concentration zones (high vs. low intensity areas).
+
+- `complaint_clusters_both.html`
+  - **Purpose:** Shows point-based marker clusters that aggregate nearby records interactively as you zoom.
+  - **Best use:** Inspects localized groupings and supports drill-down from city-level clusters to neighborhood-level points.
+
+Both files are written to the project root directory and can be opened directly in a browser.
+
+### Output Files (for `--source 311`)
+
+- `heatmap_311.html`
+  - **Purpose:** Density heatmap using 311 enriched complaint coordinates only.
+  - **Best use:** Identifies broad 311 complaint concentration areas without Yelp review data mixed in.
+
+- `complaint_clusters_311.html`
+  - **Purpose:** Clustered point map of 311 complaint locations.
+  - **Best use:** Explores local 311 complaint groupings and inspects neighborhood-level clusters.
+
+### Output Files (for `--source yelp`)
+
+- `heatmap_yelp.html`
+  - **Purpose:** Density heatmap using Yelp review enriched coordinates only.
+  - **Best use:** Visualizes where geocoded Yelp review activity is most concentrated.
+
+- `complaint_clusters_yelp.html`
+  - **Purpose:** Clustered point map of Yelp review locations.
+  - **Best use:** Drills into localized Yelp review clusters by zoom level.
