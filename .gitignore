@@ -1,0 +1,24 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Mac system files
+.DS_Store
+
+# Jupyter (if used)
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Optional: large temp files
+*.tmp
+# Raw data - too large for git
+data/raw/
+
+# Full processed files - too large for git
+data/processed/
