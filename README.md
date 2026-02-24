@@ -4,6 +4,32 @@
 This project includes data cleaning and processing utilities in `src/cleaning.py` to standardize and deduplicate data from multiple formats (JSON, Excel, CSV).
 
 ---
+Pipeline Idea 
+1. Clean the data using cleaning.py
+  - standarize_data
+  - deduplicate_records
+  - handle_missing_values
+  
+2. Text and Category processing tasks
+  - classify complaint descriptions (complaint_classifier.py)
+  - estimate severity or sentiment (estimate_severity_sentiment.py)
+  - Summarize complaint descriptions ()
+  - normalize Yelp buisness catgories ()
+
+3. Data integration
+  - Geospatial integration
+  - Hybrid integration
+
+4. Analysis and Findings 
+  - Complaint hotspots by neighborhood (e.g. heatmaps)
+  - Relationship between business density and complaint frequency
+  - Cluster of complaint types using classical clustering methods
+  - Differences in complaint patterns near different business categories (e.g. resturants vs. retail vs. services)
+
+
+
+
+
 
 ## Data Cleaning Functions
 
