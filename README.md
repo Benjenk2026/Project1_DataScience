@@ -388,16 +388,16 @@ summarize_yelp = build_summarizer(train_df["text"])  # fitted on Yelp review sam
 This module generates interactive hotspot maps from enriched complaint/review datasets in `data/processed`.
 
 ### Supported Inputs
-- `311_enriched.csv`
-- `yelp_reviews_enriched.csv`
+- `311_yelp_hybrid_integrated_enriched.csv`
+- `311_yelp_hybrid_integrated_enriched_matched.csv`
 - Or both combined in one run
 
 ### Run Commands
 From the project root:
 
 ```bash
-python src/hotspot.py --source 311
-python src/hotspot.py --source yelp
+python src/hotspot.py --source enriched
+python src/hotspot.py --source matched
 python src/hotspot.py --source both
 ```
 
@@ -418,22 +418,22 @@ python src/hotspot.py --source both --data-dir data/processed
 
 Both files are written to the project root directory and can be opened directly in a browser.
 
-### Output Files (for `--source 311`)
+### Output Files (for `--source enriched`)
 
-- `heatmap_311.html`
-  - **Purpose:** Density heatmap using 311 enriched complaint coordinates only.
-  - **Best use:** Identifies broad 311 complaint concentration areas without Yelp review data mixed in.
+- `heatmap_enriched.html`
+  - **Purpose:** Density heatmap using the hybrid integrated enriched dataset coordinates.
+  - **Best use:** Identifies broad complaint concentration areas from the full enriched integrated data.
 
-- `complaint_clusters_311.html`
-  - **Purpose:** Clustered point map of 311 complaint locations.
-  - **Best use:** Explores local 311 complaint groupings and inspects neighborhood-level clusters.
+- `complaint_clusters_enriched.html`
+  - **Purpose:** Clustered point map of records from the hybrid integrated enriched dataset.
+  - **Best use:** Explores local complaint groupings and inspects neighborhood-level clusters.
 
-### Output Files (for `--source yelp`)
+### Output Files (for `--source matched`)
 
-- `heatmap_yelp.html`
-  - **Purpose:** Density heatmap using Yelp review enriched coordinates only.
-  - **Best use:** Visualizes where geocoded Yelp review activity is most concentrated.
+- `heatmap_matched.html`
+  - **Purpose:** Density heatmap using the hybrid integrated enriched matched dataset coordinates.
+  - **Best use:** Visualizes concentration where matched integrated records are most dense.
 
-- `complaint_clusters_yelp.html`
-  - **Purpose:** Clustered point map of Yelp review locations.
-  - **Best use:** Drills into localized Yelp review clusters by zoom level.
+- `complaint_clusters_matched.html`
+  - **Purpose:** Clustered point map of matched integrated record locations.
+  - **Best use:** Drills into localized matched-record clusters by zoom level.

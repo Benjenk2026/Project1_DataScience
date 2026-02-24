@@ -21,7 +21,7 @@ def load_data(source="both", data_dir="data/processed"):
     Parameters
     ----------
     source : str
-        Which source to load: '311', 'yelp', or 'both'
+        Which source to load: 'enriched', 'matched', or 'both'
     data_dir : str
         Directory containing processed files
     
@@ -34,14 +34,14 @@ def load_data(source="both", data_dir="data/processed"):
     source = source.lower()
 
     source_files = {
-        "311": data_dir / "311_enriched.csv",
-        "yelp": data_dir / "yelp_reviews_enriched.csv",
+        "enriched": data_dir / "311_yelp_hybrid_integrated_enriched.csv",
+        "matched": data_dir / "311_yelp_hybrid_integrated_enriched_matched.csv",
     }
 
-    if source not in {"311", "yelp", "both"}:
-        raise ValueError("source must be one of: '311', 'yelp', 'both'")
+    if source not in {"enriched", "matched", "both"}:
+        raise ValueError("source must be one of: 'enriched', 'matched', 'both'")
 
-    requested_sources = ["311", "yelp"] if source == "both" else [source]
+    requested_sources = ["enriched", "matched"] if source == "both" else [source]
     frames = []
 
     for src in requested_sources:
@@ -374,9 +374,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Complaint hotspot analysis")
     parser.add_argument(
         "--source",
-        choices=["311", "yelp", "both"],
+        choices=["enriched", "matched", "both"],
         default="both",
-        help="Input dataset source: 311_enriched, yelp_reviews_enriched, or both (default).",
+        help="Input dataset source: 311_yelp_hybrid_integrated_enriched, 311_yelp_hybrid_integrated_enriched_matched, or both (default).",
     )
     parser.add_argument(
         "--data-dir",
@@ -416,8 +416,8 @@ def main():
         print("\n[5/5] Creating visualizations...")
         output_suffix = args.source.lower()
         title_lookup = {
-            "311": "311 Complaint",
-            "yelp": "Yelp Review",
+            "enriched": "Hybrid Integrated Enriched",
+            "matched": "Hybrid Integrated Enriched Matched",
             "both": "Combined",
         }
         title_prefix = title_lookup.get(output_suffix, "Complaint")
