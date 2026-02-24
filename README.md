@@ -208,5 +208,177 @@ Example usage (run from repo root):
 python -m src.data_integration
 ```
 
+---
+
+## Text & Category Processing (`text_category_processing_full.py`)
+
+### Overview
+
+`text_category_processing_full.py` handles all of Phase 2's text and category enrichment tasks. It reads the cleaned CSVs produced by `cleaning.py` and produces **two unified output CSVs**, each containing every enrichment column in a single file — no intermediate files, no post-hoc merges.
+
+---
+
+### Pipeline Design
+
+Each source file is processed in a **single streaming pass** split into two phases:
+
+**Phase A — Fit (in-memory sample)**
+- Load a manageable sample (`TRAIN_SAMPLE` rows) into RAM
+- Fit TF-IDF vectorizer and train/evaluate all three classifiers (311)
+- Fit TF-IDF and train/evaluate the severity LR classifier (Yelp reviews)
+- Compute per-category n-gram summaries (stored as a lookup dict)
+- Fit TF-IDF + K-Means on Yelp businesses (stored as a `business_id` lookup dict)
+
+**Phase B — Stream & Enrich (chunked)**
+- Read the full source CSV in `PREDICT_CHUNK_SIZE` batches — only one batch in RAM at a time
+- Apply all fitted models and lookup dicts to each batch
+- Append each enriched batch directly to the output CSV (low RAM footprint)
+
+---
+
+### Usage
+
+```bash
+python src/text_category_processing_full.py                     # run both pipelines
+python src/text_category_processing_full.py --source 311        # only 311
+python src/text_category_processing_full.py --source yelp       # only Yelp
+python src/text_category_processing_full.py --chunk-size 25000  # smaller batches if memory is tight
+```
+
+#### Batch Size Controls
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `TRAIN_SAMPLE` | `200,000` | Rows loaded to fit 311 models |
+| `YELP_TRAIN_SAMPLE` | `50,000` | Rows loaded to fit Yelp models (reviews are larger/denser) |
+| `PREDICT_CHUNK_SIZE` | `50,000` | Rows per streaming prediction batch |
+
+Reduce `--chunk-size` if you encounter memory errors during Phase B.
+
+---
+
+### Inputs & Outputs
+
+**Inputs** (`data/processed/`):
+- `311_cleaned.csv`
+- `yelp_review_cleaned.csv`
+- `yelp_business_cleaned.csv`
+
+**Outputs** (`data/processed/`):
+- `311_enriched.csv`
+- `yelp_reviews_enriched.csv`
+
+---
+
+### Pipeline A — 311 Enrichment
+
+Reads `311_cleaned.csv`, applies all four enrichment tasks, and writes `311_enriched.csv`.
+
+#### Output Columns Added
+
+| Column | Description |
+|---|---|
+| `complaint_category` | Rule-based seed label (e.g. Sanitation, Parking, Graffiti) |
+| `predicted_category` | Best ML model prediction (winner of LR vs. SVM vs. RF by macro F1) |
+| `complaint_summary` | Per-row extractive summary unique to each individual complaint text |
+| `vader_compound` | VADER overall sentiment score (−1 to +1) |
+| `vader_pos` | VADER positive sentiment component |
+| `vader_neg` | VADER negative sentiment component |
+| `sentiment_label` | `Positive` / `Neutral` / `Negative` derived from `vader_compound` |
+| `severity` | `High` / `Medium` / `Low` — VADER-only since 311 has no star ratings |
+| `textblob_polarity` | TextBlob polarity score (−1 to +1) |
+| `textblob_subjectivity` | TextBlob subjectivity score (0 = objective, 1 = subjective) |
+| `top_ngrams` | Most characteristic bigrams/trigrams for that predicted category |
+
+#### Severity Thresholds (311)
+
+Since 311 complaints have no star ratings, severity is derived purely from VADER:
+
+| VADER compound | Severity |
+|---|---|
+| `≤ −0.20` | **High** — urgent/strongly negative language |
+| `−0.20` to `+0.05` | **Medium** — mildly negative or ambiguous |
+| `> +0.05` | **Low** — neutral or informational request |
+
+#### Classifiers Evaluated
+
+All three models are trained on rule-seeded labels and evaluated on a held-out 20% split. The best by macro F1 is used for Phase B prediction.
+
+```
+Logistic Regression  — max_iter=1000, C=1.0
+Linear SVM           — max_iter=2000
+Random Forest        — n_estimators=100, n_jobs=-1
+```
+
+---
+
+### Pipeline B — Yelp Review Enrichment
+
+Reads `yelp_review_cleaned.csv` and `yelp_business_cleaned.csv`, applies all four enrichment tasks, and writes `yelp_reviews_enriched.csv`.
+
+#### Output Columns Added
+
+| Column | Description |
+|---|---|
+| `review_aspect` | Rule-based aspect label (Food Quality, Service, Atmosphere, Price/Value, Wait Time, Cleanliness) |
+| `review_summary` | Per-row extractive summary unique to each individual review |
+| `vader_compound` | VADER overall sentiment score (−1 to +1) |
+| `vader_pos` | VADER positive sentiment component |
+| `vader_neg` | VADER negative sentiment component |
+| `sentiment_label` | `Positive` / `Neutral` / `Negative` derived from `vader_compound` |
+| `textblob_polarity` | TextBlob polarity score (−1 to +1) |
+| `textblob_subjectivity` | TextBlob subjectivity score |
+| `ml_severity` | LR classifier trained on star ratings with `class_weight="balanced"` |
+| `severity` | Unified severity combining VADER (primary) + ML (tiebreaker in neutral band) |
+| `top_ngrams` | Most characteristic bigrams/trigrams for that review aspect |
+| `broad_category_rule` | Business group from string matching (e.g. Food & Dining, Retail, Health) |
+| `cluster_id` | K-Means cluster ID assigned to the associated business |
+| `cluster_label` | Human-readable label for that cluster (top 3 TF-IDF terms) |
+
+#### Severity Logic (Yelp)
+
+Yelp severity combines VADER (which reads the actual words) with an ML classifier trained on star ratings. VADER is the primary signal because the dataset skews heavily toward 4–5 star reviews, causing the ML model to over-predict "Low" without correction.
+
+| Condition | Severity |
+|---|---|
+| `vader_compound ≤ −0.20` | **High** — negative language always wins |
+| `vader_compound > +0.20` and `ml_severity != High` | **Low** |
+| `vader_compound > +0.20` and `ml_severity == High` | **Medium** — ML overrides clearly positive VADER |
+| `−0.20 < vader_compound ≤ +0.20` | Defer to `ml_severity` (neutral band) |
+
+#### Business Category Normalization
+
+Two strategies are applied to `yelp_business_cleaned.csv` and joined onto each review via `business_id`:
+
+**Strategy A — String Matching:** Maps raw Yelp category strings to one of 8 broad groups using keyword rules.
+
+| Group | Example Keywords |
+|---|---|
+| Food & Dining | restaurant, food, bar, cafe, pizza, sushi |
+| Retail | shop, store, boutique, market, clothing |
+| Health | medical, doctor, dentist, pharmacy, hospital |
+| Beauty | salon, spa, nail, hair, barber |
+| Automotive | auto, car, tire, mechanic |
+| Services | plumber, electrician, contractor, cleaning |
+| Entertainment | gym, fitness, yoga, movie, theatre |
+| Education | school, tutor, university, college |
+
+**Strategy B — K-Means Clustering:** Fits TF-IDF on raw category strings and clusters into 10 groups. Each cluster is labeled with its top 3 TF-IDF terms. A cross-tab of rule labels vs. cluster labels is printed for interpretability.
+
+---
+
+### Heuristic Summarizer (`build_summarizer`)
+
+Returns a per-row summary function fitted on a training corpus. No LLMs — purely TF-IDF-based extraction.
+
+**Algorithm:**
+1. Fit TF-IDF on the training corpus to learn IDF weights (higher = more informative token)
+2. For each row, score every word and bigram in the text by its IDF weight
+3. Find the single sentence containing the highest concentration of top-scored terms
+4. Return that sentence trimmed to 20 words, or fall back to top key terms joined with `|`
+
+```python
+summarize_311  = build_summarizer(fit_df["_text"])   # fitted on 311 training sample
+summarize_yelp = build_summarizer(train_df["text"])  # fitted on Yelp review sample
 
 
