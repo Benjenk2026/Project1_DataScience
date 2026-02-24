@@ -23,7 +23,7 @@ Pipeline Idea
 4. Analysis and Findings 
   - Complaint hotspots by neighborhood (e.g. heatmaps)
   - Relationship between business density and complaint frequency
-  - Cluster of complaint types using classical clustering methods
+  - Cluster of complaint types using K-means clustering
   - Differences in complaint patterns near different business categories (e.g. resturants vs. retail vs. services)
 
 
@@ -437,3 +437,65 @@ Both files are written to the project root directory and can be opened directly 
 - `complaint_clusters_matched.html`
   - **Purpose:** Clustered point map of matched integrated record locations.
   - **Best use:** Drills into localized matched-record clusters by zoom level.
+
+---
+
+## Complaint Type Clustering (`src/clusters_of_complaints.py`)
+
+This module clusters complaint text into complaint-type groups using **K-means** on TF-IDF features and exports presentation-ready outputs.
+
+### Supported Inputs
+- `311_yelp_hybrid_integrated_enriched.csv`
+- `311_yelp_hybrid_integrated_enriched_matched.csv`
+- Or both combined in one run (`--source both`)
+
+### Feature Construction
+For each row, the script builds one clustering text field by combining:
+- `complaint_type`
+- `predicted_category`
+- `complaint_summary`
+- `__text311__`
+
+Then it vectorizes text using TF-IDF (`max_features=7000`, unigrams+bigrams, English stop words) and runs K-means.
+
+### Run Commands
+From the project root:
+
+```bash
+python src/clusters_of_complaints.py --source enriched
+python src/clusters_of_complaints.py --source matched
+python src/clusters_of_complaints.py --source both
+```
+
+Example with custom settings:
+
+```bash
+python src/clusters_of_complaints.py --source both --clusters 6 --sample-size 120000
+```
+
+Optional flags:
+- `--clusters` (default: `8`)
+- `--sample-size` (default: `40000`)
+- `--data-dir` (default: `data/processed`)
+- `--output-dir` (default: `analysis_findings`)
+- `--random-state` (default: `42`)
+
+### Output Files
+Written to `analysis_findings/` (or your `--output-dir`):
+
+- `complaint_clusters_kmeans_<source>.png`
+  - Horizontal bar chart of cluster sizes with count and percentage labels.
+
+- `complaint_cluster_profiles_kmeans_<source>.csv`
+  - Cluster summary table with:
+    - `cluster_id`
+    - `size`
+    - `top_terms` (top TF-IDF terms per cluster)
+
+- `complaint_cluster_assignments_kmeans_<source>.csv`
+  - Row-level assignments including `cluster_id` and complaint descriptors.
+
+- `complaint_cluster_metrics_kmeans_<source>.txt`
+  - Run metadata including source, cluster count, sample size, TF-IDF feature count, and silhouette score.
+
+If an output file is open/locked by another program, the script automatically writes a timestamp-suffixed fallback filename.
