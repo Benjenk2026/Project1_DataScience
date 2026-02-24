@@ -47,8 +47,8 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(script_dir, ".."))
 
-    in_311 = os.path.join(project_root, "data", "processed", "311_processed.csv")
-    in_yelp = os.path.join(project_root, "data", "processed", "yelp_processed.csv")
+    in_311 = os.path.join(project_root, "data", "processed", "311_cleaned.csv")
+    in_yelp = os.path.join(project_root, "data", "processed", "yelp_business_cleaned.csv")
     out_path = os.path.join(project_root, "data", "processed", "311_yelp_hybrid_integrated.csv")
 
     df311 = pd.read_csv(in_311)
@@ -143,7 +143,7 @@ def main():
         how="left",
     ).drop(columns=["index"])
 
-    yelp_cols_to_add = ["business_id", "name", "address", "city", "state", "postal_code", "stars", "num_reviews", "is_open", "categories"]
+    yelp_cols_to_add = ["business_id", "name", "address", "city", "state", "zipcode", "stars", "review_count", "is_open", "categories"]
     yelp_cols_to_add = [c for c in yelp_cols_to_add if c in yelp.columns]
 
     out = out.merge(
