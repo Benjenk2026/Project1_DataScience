@@ -94,6 +94,5 @@ These cleaned files are used in the next phase of the project.
 
 ## Notes
 
-The script is designed to be simple and follow concepts covered in class
 Chunked mode trades some accuracy for performance but allows large files to be processed
 Make sure required libraries are installed before running
