@@ -1,9 +1,39 @@
 # Data Cleaning Utilities
 
+## Links to Data
+* *Raw and Matched Data* /https://falconbgsu-my.sharepoint.com/personal/rhannam_bgsu_edu/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Frhannam%5Fbgsu%5Fedu%2FDocuments%2FCS4360%5FProject1%5FData&ga=1
+* *Enriched Data* /https://falconbgsu-my.sharepoint.com/my?id=%2Fpersonal%2Fttbaum%5Fbgsu%5Fedu%2FDocuments%2FProject1%5Fcategorized%5Fdata&ga=1
+
 ## Overview
 This project includes data cleaning and processing utilities in `src/cleaning.py` to standardize and deduplicate data from multiple formats (JSON, Excel, CSV).
 
 ---
+Pipeline Idea 
+1. Clean the data using cleaning.py
+  - standarize_data
+  - deduplicate_records
+  - handle_missing_values
+  
+2. Text and Category processing tasks
+  - classify complaint descriptions (complaint_classifier.py)
+  - estimate severity or sentiment (estimate_severity_sentiment.py)
+  - Summarize complaint descriptions ()
+  - normalize Yelp buisness catgories ()
+
+3. Data integration
+  - Geospatial integration
+  - Hybrid integration
+
+4. Analysis and Findings 
+  - Complaint hotspots by neighborhood (e.g. heatmaps)
+  - Relationship between business density and complaint frequency
+  - Cluster of complaint types using K-means clustering
+  - Differences in complaint patterns near different business categories (e.g. resturants vs. retail vs. services)
+
+
+
+
+
 
 ## Data Cleaning Functions
 
@@ -182,5 +212,294 @@ Example usage (run from repo root):
 python -m src.data_integration
 ```
 
+---
 
+## Text & Category Processing (`text_category_processing_full.py`)
 
+### Overview
+
+`text_category_processing_full.py` handles all of Phase 2's text and category enrichment tasks. It reads the cleaned CSVs produced by `cleaning.py` and produces **two unified output CSVs**, each containing every enrichment column in a single file — no intermediate files, no post-hoc merges.
+
+---
+
+### Pipeline Design
+
+Each source file is processed in a **single streaming pass** split into two phases:
+
+**Phase A — Fit (in-memory sample)**
+- Load a manageable sample (`TRAIN_SAMPLE` rows) into RAM
+- Fit TF-IDF vectorizer and train/evaluate all three classifiers (311)
+- Fit TF-IDF and train/evaluate the severity LR classifier (Yelp reviews)
+- Compute per-category n-gram summaries (stored as a lookup dict)
+- Fit TF-IDF + K-Means on Yelp businesses (stored as a `business_id` lookup dict)
+
+**Phase B — Stream & Enrich (chunked)**
+- Read the full source CSV in `PREDICT_CHUNK_SIZE` batches — only one batch in RAM at a time
+- Apply all fitted models and lookup dicts to each batch
+- Append each enriched batch directly to the output CSV (low RAM footprint)
+
+---
+
+### Usage
+
+```bash
+python src/text_category_processing_full.py                     # run both pipelines
+python src/text_category_processing_full.py --source 311        # only 311
+python src/text_category_processing_full.py --source yelp       # only Yelp
+python src/text_category_processing_full.py --chunk-size 25000  # smaller batches if memory is tight
+```
+
+#### Batch Size Controls
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `TRAIN_SAMPLE` | `200,000` | Rows loaded to fit 311 models |
+| `YELP_TRAIN_SAMPLE` | `50,000` | Rows loaded to fit Yelp models (reviews are larger/denser) |
+| `PREDICT_CHUNK_SIZE` | `50,000` | Rows per streaming prediction batch |
+
+Reduce `--chunk-size` if you encounter memory errors during Phase B.
+
+---
+
+### Inputs & Outputs
+
+**Inputs** (`data/processed/`):
+- `311_cleaned.csv`
+- `yelp_review_cleaned.csv`
+- `yelp_business_cleaned.csv`
+
+**Outputs** (`data/processed/`):
+- `311_enriched.csv`
+- `yelp_reviews_enriched.csv`
+
+---
+
+### Pipeline A — 311 Enrichment
+
+Reads `311_cleaned.csv`, applies all four enrichment tasks, and writes `311_enriched.csv`.
+
+#### Output Columns Added
+
+| Column | Description |
+|---|---|
+| `complaint_category` | Rule-based seed label (e.g. Sanitation, Parking, Graffiti) |
+| `predicted_category` | Best ML model prediction (winner of LR vs. SVM vs. RF by macro F1) |
+| `complaint_summary` | Per-row extractive summary unique to each individual complaint text |
+| `vader_compound` | VADER overall sentiment score (−1 to +1) |
+| `vader_pos` | VADER positive sentiment component |
+| `vader_neg` | VADER negative sentiment component |
+| `sentiment_label` | `Positive` / `Neutral` / `Negative` derived from `vader_compound` |
+| `severity` | `High` / `Medium` / `Low` — VADER-only since 311 has no star ratings |
+| `textblob_polarity` | TextBlob polarity score (−1 to +1) |
+| `textblob_subjectivity` | TextBlob subjectivity score (0 = objective, 1 = subjective) |
+| `top_ngrams` | Most characteristic bigrams/trigrams for that predicted category |
+
+#### Severity Thresholds (311)
+
+Since 311 complaints have no star ratings, severity is derived purely from VADER:
+
+| VADER compound | Severity |
+|---|---|
+| `≤ −0.20` | **High** — urgent/strongly negative language |
+| `−0.20` to `+0.05` | **Medium** — mildly negative or ambiguous |
+| `> +0.05` | **Low** — neutral or informational request |
+
+#### Classifiers Evaluated
+
+All three models are trained on rule-seeded labels and evaluated on a held-out 20% split. The best by macro F1 is used for Phase B prediction.
+
+```
+Logistic Regression  — max_iter=1000, C=1.0
+Linear SVM           — max_iter=2000
+Random Forest        — n_estimators=100, n_jobs=-1
+```
+
+---
+
+### Pipeline B — Yelp Review Enrichment
+
+Reads `yelp_review_cleaned.csv` and `yelp_business_cleaned.csv`, applies all four enrichment tasks, and writes `yelp_reviews_enriched.csv`.
+
+#### Output Columns Added
+
+| Column | Description |
+|---|---|
+| `review_aspect` | Rule-based aspect label (Food Quality, Service, Atmosphere, Price/Value, Wait Time, Cleanliness) |
+| `review_summary` | Per-row extractive summary unique to each individual review |
+| `vader_compound` | VADER overall sentiment score (−1 to +1) |
+| `vader_pos` | VADER positive sentiment component |
+| `vader_neg` | VADER negative sentiment component |
+| `sentiment_label` | `Positive` / `Neutral` / `Negative` derived from `vader_compound` |
+| `textblob_polarity` | TextBlob polarity score (−1 to +1) |
+| `textblob_subjectivity` | TextBlob subjectivity score |
+| `ml_severity` | LR classifier trained on star ratings with `class_weight="balanced"` |
+| `severity` | Unified severity combining VADER (primary) + ML (tiebreaker in neutral band) |
+| `top_ngrams` | Most characteristic bigrams/trigrams for that review aspect |
+| `broad_category_rule` | Business group from string matching (e.g. Food & Dining, Retail, Health) |
+| `cluster_id` | K-Means cluster ID assigned to the associated business |
+| `cluster_label` | Human-readable label for that cluster (top 3 TF-IDF terms) |
+
+#### Severity Logic (Yelp)
+
+Yelp severity combines VADER (which reads the actual words) with an ML classifier trained on star ratings. VADER is the primary signal because the dataset skews heavily toward 4–5 star reviews, causing the ML model to over-predict "Low" without correction.
+
+| Condition | Severity |
+|---|---|
+| `vader_compound ≤ −0.20` | **High** — negative language always wins |
+| `vader_compound > +0.20` and `ml_severity != High` | **Low** |
+| `vader_compound > +0.20` and `ml_severity == High` | **Medium** — ML overrides clearly positive VADER |
+| `−0.20 < vader_compound ≤ +0.20` | Defer to `ml_severity` (neutral band) |
+
+#### Business Category Normalization
+
+Two strategies are applied to `yelp_business_cleaned.csv` and joined onto each review via `business_id`:
+
+**Strategy A — String Matching:** Maps raw Yelp category strings to one of 8 broad groups using keyword rules.
+
+| Group | Example Keywords |
+|---|---|
+| Food & Dining | restaurant, food, bar, cafe, pizza, sushi |
+| Retail | shop, store, boutique, market, clothing |
+| Health | medical, doctor, dentist, pharmacy, hospital |
+| Beauty | salon, spa, nail, hair, barber |
+| Automotive | auto, car, tire, mechanic |
+| Services | plumber, electrician, contractor, cleaning |
+| Entertainment | gym, fitness, yoga, movie, theatre |
+| Education | school, tutor, university, college |
+
+**Strategy B — K-Means Clustering:** Fits TF-IDF on raw category strings and clusters into 10 groups. Each cluster is labeled with its top 3 TF-IDF terms. A cross-tab of rule labels vs. cluster labels is printed for interpretability.
+
+---
+
+### Heuristic Summarizer (`build_summarizer`)
+
+Returns a per-row summary function fitted on a training corpus. No LLMs — purely TF-IDF-based extraction.
+
+**Algorithm:**
+1. Fit TF-IDF on the training corpus to learn IDF weights (higher = more informative token)
+2. For each row, score every word and bigram in the text by its IDF weight
+3. Find the single sentence containing the highest concentration of top-scored terms
+4. Return that sentence trimmed to 20 words, or fall back to top key terms joined with `|`
+
+```python
+summarize_311  = build_summarizer(fit_df["_text"])   # fitted on 311 training sample
+summarize_yelp = build_summarizer(train_df["text"])  # fitted on Yelp review sample
+
+```
+
+## Hotspot Analysis (`src/hotspot.py`)
+
+This module generates interactive hotspot maps from enriched complaint/review datasets in `data/processed`.
+
+### Supported Inputs
+- `311_yelp_hybrid_integrated_enriched.csv`
+- `311_yelp_hybrid_integrated_enriched_matched.csv`
+- Or both combined in one run
+
+### Run Commands
+From the project root:
+
+```bash
+python src/hotspot.py --source enriched
+python src/hotspot.py --source matched
+python src/hotspot.py --source both
+```
+
+Optional:
+```bash
+python src/hotspot.py --source both --data-dir data/processed
+```
+
+### Output Files (for `--source both`)
+
+- `heatmap_both.html`
+  - **Purpose:** Shows a continuous density heatmap of all valid coordinates.
+  - **Best use:** Quickly identifies broad geographic concentration zones (high vs. low intensity areas).
+
+- `complaint_clusters_both.html`
+  - **Purpose:** Shows point-based marker clusters that aggregate nearby records interactively as you zoom.
+  - **Best use:** Inspects localized groupings and supports drill-down from city-level clusters to neighborhood-level points.
+
+Both files are written to the project root directory and can be opened directly in a browser.
+
+### Output Files (for `--source enriched`)
+
+- `heatmap_enriched.html`
+  - **Purpose:** Density heatmap using the hybrid integrated enriched dataset coordinates.
+  - **Best use:** Identifies broad complaint concentration areas from the full enriched integrated data.
+
+- `complaint_clusters_enriched.html`
+  - **Purpose:** Clustered point map of records from the hybrid integrated enriched dataset.
+  - **Best use:** Explores local complaint groupings and inspects neighborhood-level clusters.
+
+### Output Files (for `--source matched`)
+
+- `heatmap_matched.html`
+  - **Purpose:** Density heatmap using the hybrid integrated enriched matched dataset coordinates.
+  - **Best use:** Visualizes concentration where matched integrated records are most dense.
+
+- `complaint_clusters_matched.html`
+  - **Purpose:** Clustered point map of matched integrated record locations.
+  - **Best use:** Drills into localized matched-record clusters by zoom level.
+
+---
+
+## Complaint Type Clustering (`src/clusters_of_complaints.py`)
+
+This module clusters complaint text into complaint-type groups using **K-means** on TF-IDF features and exports presentation-ready outputs.
+
+### Supported Inputs
+- `311_yelp_hybrid_integrated_enriched.csv`
+- `311_yelp_hybrid_integrated_enriched_matched.csv`
+- Or both combined in one run (`--source both`)
+
+### Feature Construction
+For each row, the script builds one clustering text field by combining:
+- `complaint_type`
+- `predicted_category`
+- `complaint_summary`
+- `__text311__`
+
+Then it vectorizes text using TF-IDF (`max_features=7000`, unigrams+bigrams, English stop words) and runs K-means.
+
+### Run Commands
+From the project root:
+
+```bash
+python src/clusters_of_complaints.py --source enriched
+python src/clusters_of_complaints.py --source matched
+python src/clusters_of_complaints.py --source both
+```
+
+Example with custom settings:
+
+```bash
+python src/clusters_of_complaints.py --source both --clusters 6 --sample-size 120000
+```
+
+Optional flags:
+- `--clusters` (default: `8`)
+- `--sample-size` (default: `40000`)
+- `--data-dir` (default: `data/processed`)
+- `--output-dir` (default: `analysis_findings`)
+- `--random-state` (default: `42`)
+
+### Output Files
+Written to `analysis_findings/` (or your `--output-dir`):
+
+- `complaint_clusters_kmeans_<source>.png`
+  - Horizontal bar chart of cluster sizes with count and percentage labels.
+
+- `complaint_cluster_profiles_kmeans_<source>.csv`
+  - Cluster summary table with:
+    - `cluster_id`
+    - `size`
+    - `top_terms` (top TF-IDF terms per cluster)
+
+- `complaint_cluster_assignments_kmeans_<source>.csv`
+  - Row-level assignments including `cluster_id` and complaint descriptors.
+
+- `complaint_cluster_metrics_kmeans_<source>.txt`
+  - Run metadata including source, cluster count, sample size, TF-IDF feature count, and silhouette score.
+
+If an output file is open/locked by another program, the script automatically writes a timestamp-suffixed fallback filename.
