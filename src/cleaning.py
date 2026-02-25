@@ -1,29 +1,27 @@
-import tkinter as tk
-from tkinter import filedialog
-import pandas as pd
-import sys
+"""
+cleaning.py
+Phase 2 - Data Cleaning Pipeline
+CS 4/5630 Project 1
+
+Cleans the Philadelphia 311 CSV and all Yelp JSON files.
+Tools: pandas (required), re, pathlib, argparse
+
+Usage:
+    python src/cleaning.py --all
+    python src/cleaning.py --file 311
+    python src/cleaning.py --file yelp_review --chunked
+    python src/cleaning.py --file yelp_user --chunked
+
+Use --chunked for large files (yelp_review, yelp_user) to avoid
+loading the entire file into memory at once. Processes in batches
+of 100,000 rows, writing incrementally to the output CSV.
+"""
+
+import argparse
+import re
 import json
 from pathlib import Path
-import re
-
-
-
-
-#open file dialog to select file
-def select_file(filetypes=None, title="Select file"):
-    if filetypes is None:
-        filetypes = [
-            ("Excel, CSV, or JSON", ("*.xlsx", "*.xls", "*.csv", "*.json")),
-            ("Excel files", ("*.xlsx", "*.xls")),
-            ("CSV files", "*.csv"),
-            ("JSON files", "*.json"),
-            ("All files", "*.*"),
-        ]
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    file_path = filedialog.askopenfilename(title=title, filetypes=filetypes)
-    root.destroy()
-    return file_path
+import pandas as pd
 
 
 def openfile(file_path, max_rows=None):
@@ -47,7 +45,8 @@ def openfile(file_path, max_rows=None):
     if isinstance(p, Path) and not p.exists():
         print(f"File not found: {file_path}")
         return None
-    extension = p.suffix.lower()
+
+    print(f"Loading {p.name}...")
     try:
         if extension == ".json":
             print(f"Reading JSON file (attempting JSON lines, max {max_rows:,} rows)..." if max_rows else "Reading JSON file (attempting JSON lines)...")
@@ -92,7 +91,7 @@ def openfile(file_path, max_rows=None):
             except Exception:
                 df = pd.read_csv(p, nrows=max_rows)
     except Exception as e:
-        print(f"Failed to read file '{file_path}': {e}")
+        print(f"ERROR loading {p}: {e}")
         return None
 
     # return the dataframe to the caller
@@ -210,160 +209,103 @@ def process_file_in_chunks(file_path, chunk_size=100000, process_func=None, **kw
 def standardize_data(file_path_or_df, save=True, processed_dir="data/processed", casefold_values=False, trim_whitespace=True):
     """Read and standardize the file at `file_path` then optionally save to `processed_dir`.
 
-    Returns the standardized DataFrame or None on failure.
+    Strategy:
+    - Drop rows missing critical ID or timestamp columns (unusable without them)
+    - Drop columns with >= 80% missing values (too sparse to be useful)
+    - Impute numeric fields with median where specified
     """
-    # Allow passing either a path or an already-loaded DataFrame
-    file_path = None
-    if isinstance(file_path_or_df, (str, Path)):
-        file_path = file_path_or_df
-        df = openfile(file_path)
-        if df is None:
-            return None
-    else:
-        df = file_path_or_df
-        if df is None:
-            return None
+    df = df.copy()
+    original_rows = len(df)
 
-    # Normalize column names to snake_case
-    def to_snake_case(name: str) -> str:
-        s = str(name)
-        s = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', s)
-        s = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s)
-        s = re.sub(r'[^0-9a-zA-Z]+', '_', s)
-        s = re.sub(r'_+', '_', s)
-        s = s.strip('_').lower()
-        return s
+    if drop_rows:
+        valid = [c for c in drop_rows if c in df.columns]
+        if valid:
+            df = df.dropna(subset=valid)
+            print(f"  Dropped {original_rows - len(df):,} rows missing {valid}")
+
+    sparse_cols = df.columns[df.isna().mean() >= 0.8].tolist()
+    if sparse_cols:
+        df = df.drop(columns=sparse_cols)
+        print(f"  Dropped {len(sparse_cols)} sparse columns (>=80% missing): {sparse_cols}")
+
+    if impute:
+        for col, strategy in impute.items():
+            if col in df.columns and df[col].isna().any():
+                fill = df[col].median() if strategy == "median" else df[col].mean()
+                df[col] = df[col].fillna(fill)
+                print(f"  Imputed '{col}' with {strategy} ({fill:.2f})")
+
+    print(f"  Rows: {original_rows:,} -> {len(df):,}")
+    return df
 
 
-    try:
-        orig_cols = df.columns.astype(str).tolist()
-        norm_cols = [to_snake_case(c) for c in orig_cols]
+# ==============================================================================
+# DEDUPLICATION
+# Required: identify and remove rows representing the same real-world event
+# ==============================================================================
 
-        # Optionally trim whitespace from string-like values
-        if trim_whitespace:
-            try:
-                for col in df.columns:
-                    if pd.api.types.is_string_dtype(df[col]) or pd.api.types.is_object_dtype(df[col]):
-                        df[col] = df[col].where(df[col].isna(), df[col].astype(str).str.strip())
-            except Exception:
-                pass
+def deduplicate_records(df: pd.DataFrame, subset: list) -> pd.DataFrame:
+    """Remove duplicates keeping the most complete record per group.
 
-        # Merge columns that normalize to the same snake_case name
-        from collections import OrderedDict
+    Strategy: within each group sharing the same key, keep the row with
+    the fewest missing values.
+    Justification: preserves the richest version of each real-world event.
+    """
+    original = len(df)
+    if not subset or not all(c in df.columns for c in subset):
+        print(f"  Skipping dedup — key columns not found: {subset}")
+        return df
 
-        groups = OrderedDict()
-        for orig, norm in zip(orig_cols, norm_cols):
-            groups.setdefault(norm, []).append(orig)
+    df = df.copy()
+    df["_missing"] = df.isna().sum(axis=1)
+    df = (df.sort_values(subset + ["_missing"])
+            .drop_duplicates(subset=subset, keep="first")
+            .drop(columns=["_missing"]))
 
-        merged_df = pd.DataFrame()
-        for norm, cols in groups.items():
-            if len(cols) == 1:
-                merged_df[norm] = df[cols[0]]
-            else:
-                # take the first non-null value across the duplicate columns
-                merged_df[norm] = df[cols].bfill(axis=1).iloc[:, 0]
+    print(f"  Dedup on {subset}: {original:,} -> {len(df):,} "
+          f"({original - len(df):,} removed)")
+    return df
 
-        df = merged_df
 
-        # Further token-level normalization and consistent prefixes
-        replacements = {
-            'lat': 'latitude',
-            'long': 'longitude',
-            'lon': 'longitude',
-            'addr': 'address',
-            'add': 'address',
-            'zip': 'postal_code',
-            'postcode': 'postal_code',
-            'st': 'state',
-            'biz': 'business',
-        }
+# ==============================================================================
+# CHUNK CLEANING  (for large files)
+# ==============================================================================
 
-        def apply_token_replacements(name: str) -> str:
-            parts = [p for p in name.split('_') if p]
-            parts = [replacements.get(p, p) for p in parts]
-            return '_'.join(parts)
+def _clean_chunk(df: pd.DataFrame, name: str, cfg: dict) -> pd.DataFrame:
+    """Apply all cleaning steps to a single chunk. Used by clean_file_chunked."""
+    df = standardize_columns(df)
 
-        new_names = []
-        for col in df.columns.astype(str):
-            n = apply_token_replacements(col)
+    if name == "311":
+        source = next((c for c in ["subject", "service_name", "service_notice"]
+                       if c in df.columns), None)
+        if source:
+            df["complaint_type"] = df[source].map(normalize_complaint_type)
+        df = clean_location(df)
+    elif name == "yelp_business":
+        if "categories" in df.columns:
+            results = df["categories"].map(normalize_yelp_categories)
+            df["categories_clean"] = results.map(lambda x: x[0])
+            df["broad_category"]   = results.map(lambda x: x[1])
+        df = clean_location(df)
 
-            # canonical latitude/longitude names
-            if re.search(r'(^|_)lat($|_)', n) or 'latitude' in n:
-                n = 'latitude'
-            if re.search(r'(^|_)(lon|long)($|_)', n) or 'longitude' in n:
-                n = 'longitude'
+    # Drop rows missing critical columns
+    if cfg["drop_rows"]:
+        valid = [c for c in cfg["drop_rows"] if c in df.columns]
+        if valid:
+            df = df.dropna(subset=valid)
 
-            # counts -> prefix with num_ and pluralize base when sensible
-            if 'count' in n.split('_') or re.search(r'(^|_)count($|_)', n):
-                base = re.sub(r'(_?count$)', '', n)
-                base = base.strip('_')
-                if base.endswith('s'):
-                    plural = base
-                else:
-                    plural = base + 's' if base else 'count'
-                n = f'num_{plural}'
+    # Fill text columns
+    for col in cfg["text_fill"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype("string")
 
-            # boolean detection: values only 0/1 or True/False
-            try:
-                sample = df[col].dropna().head(200)
-                if not sample.empty:
-                    vals = set(str(x).strip().lower() for x in sample.astype(str).unique())
-                    if vals.issubset({'0', '1', 'true', 'false', 't', 'f'}):
-                        if not n.startswith('is_'):
-                            n = 'is_' + n
-            except Exception:
-                pass
-
-            # final cleanup: remove any leftover non-alphanumeric/underscore
-            n = re.sub(r'[^0-9a-z_]+', '_', n)
-            n = re.sub(r'_+', '_', n).strip('_').lower()
-
-            new_names.append(n)
-
-        # Ensure uniqueness
-        final_names = []
-        seen = {}
-        for n in new_names:
-            base = n
-            i = 1
-            while n in seen:
-                i += 1
-                n = f"{base}_{i}"
-            seen[n] = True
-            final_names.append(n)
-
-        df.columns = final_names
-    except Exception:
-        pass
-    # Optionally case-fold string-like values for consistent textual normalization
-    if casefold_values:
-        try:
-            for col in df.columns:
-                # only attempt for object/string dtypes
-                if pd.api.types.is_string_dtype(df[col]) or pd.api.types.is_object_dtype(df[col]):
-                    try:
-                        df[col] = df[col].where(df[col].isna(), df[col].astype(str).str.casefold())
-                    except Exception:
-                        # fallback: convert to str then casefold where possible
-                        try:
-                            df[col] = df[col].astype(str).where(df[col].isna(), df[col].astype(str).str.casefold())
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-    file_label = file_path if file_path else "DataFrame"
-    print(f"Standardized data for file '{file_label}' with {len(df)} rows and {len(df.columns)} columns.")
-
-    if save:
-        out_dir = Path(processed_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        stem = Path(file_path).stem if file_path else "dataframe"
-        out_path = out_dir / f"{stem}_standardized.csv"
-        try:
-            df.to_csv(out_path, index=False, encoding='utf-8')
-            print(f"Wrote standardized file to: {out_path}")
-        except Exception as e:
-            print(f"Failed to write standardized file: {e}")
+    # Within-chunk dedup only (cross-chunk dedup not feasible without full load)
+    id_col = cfg["id_col"]
+    if id_col in df.columns:
+        df["_missing"] = df.isna().sum(axis=1)
+        df = (df.sort_values([id_col, "_missing"])
+                .drop_duplicates(subset=[id_col], keep="first")
+                .drop(columns=["_missing"]))
 
     return df
 
@@ -584,138 +526,116 @@ def handle_missing_values(df, drop_rows_subset=None, drop_cols_threshold=None,
     ...     impute_values={'department': 'Unknown', 'salary': 0}
     ... )
     """
-    if df is None or df.empty:
-        return df, {
-            'original_rows': 0,
-            'final_rows': 0,
-            'rows_dropped': 0,
-            'cols_dropped': 0,
-            'cells_imputed': 0
-        }
-    
-    df_work = df.copy()
-    original_rows = len(df_work)
-    original_cols = len(df_work.columns)
-    cells_imputed = 0
-    
-    # Step 1: Drop rows with missing values in critical columns
-    if drop_rows_subset is not None:
-        if isinstance(drop_rows_subset, str):
-            drop_rows_subset = [drop_rows_subset]
-        
-        # Validate columns exist
-        valid_cols = [col for col in drop_rows_subset if col in df_work.columns]
-        if not valid_cols and drop_rows_subset:
-            print(f"Warning: Columns {set(drop_rows_subset) - set(df_work.columns)} not found.")
-        
-        if valid_cols:
-            rows_before = len(df_work)
-            # Drop rows where any of the specified columns have NaN
-            df_work = df_work.dropna(subset=valid_cols, how='any')
-            rows_dropped = rows_before - len(df_work)
-            print(f"  Dropped {rows_dropped} rows with missing values in {valid_cols}")
-        else:
-            rows_dropped = 0
-    else:
-        rows_dropped = 0
-    
-    # Step 2: Drop columns with high missing percentage
-    if drop_cols_threshold is not None:
-        if not (0 <= drop_cols_threshold <= 100):
-            print(f"Warning: drop_cols_threshold must be 0-100. Using None.")
-            drop_cols_threshold = None
-        else:
-            missing_pct = (df_work.isna().sum() / len(df_work)) * 100
-            cols_to_drop = missing_pct[missing_pct >= drop_cols_threshold].index.tolist()
-            if cols_to_drop:
-                df_work = df_work.drop(columns=cols_to_drop)
-                print(f"  Dropped {len(cols_to_drop)} columns with >={drop_cols_threshold}% missing: {cols_to_drop}")
-            cols_dropped = len(cols_to_drop)
-        if drop_cols_threshold is None:
-            cols_dropped = 0
-    else:
-        cols_dropped = 0
-    
-    # Step 3: Impute missing values with specific values
-    if impute_values is not None:
-        for col, fill_value in impute_values.items():
-            if col in df_work.columns:
-                missing_count = df_work[col].isna().sum()
-                if missing_count > 0:
-                    df_work[col].fillna(fill_value, inplace=True)
-                    cells_imputed += missing_count
-                    print(f"  Imputed {missing_count} missing values in '{col}' with '{fill_value}'")
-    
-    # Step 4: Impute missing values with statistical measures
-    if impute_strategy is not None:
-        for col, strategy in impute_strategy.items():
-            if col not in df_work.columns:
-                print(f"Warning: Column '{col}' not found. Skipping imputation.")
-                continue
-            
-            missing_count = df_work[col].isna().sum()
-            if missing_count == 0:
-                continue
-            
-            try:
-                if strategy == 'mean':
-                    fill_value = df_work[col].mean()
-                    df_work[col].fillna(fill_value, inplace=True)
-                    print(f"  Imputed {missing_count} missing values in '{col}' with mean ({fill_value:.2f})")
-                
-                elif strategy == 'median':
-                    fill_value = df_work[col].median()
-                    df_work[col].fillna(fill_value, inplace=True)
-                    print(f"  Imputed {missing_count} missing values in '{col}' with median ({fill_value:.2f})")
-                
-                elif strategy == 'mode':
-                    fill_value = df_work[col].mode()[0] if not df_work[col].mode().empty else None
-                    if fill_value is not None:
-                        df_work[col].fillna(fill_value, inplace=True)
-                        print(f"  Imputed {missing_count} missing values in '{col}' with mode ({fill_value})")
-                
-                elif strategy == 'forward_fill':
-                    df_work[col].fillna(method='ffill', inplace=True)
-                    still_missing = df_work[col].isna().sum()
-                    imputed_count = missing_count - still_missing
-                    df_work[col].fillna(method='bfill', inplace=True)
-                    still_missing = df_work[col].isna().sum()
-                    imputed_count = missing_count - still_missing
-                    print(f"  Imputed {imputed_count} missing values in '{col}' with forward fill")
-                
-                elif strategy == 'backward_fill':
-                    df_work[col].fillna(method='bfill', inplace=True)
-                    still_missing = df_work[col].isna().sum()
-                    imputed_count = missing_count - still_missing
-                    print(f"  Imputed {imputed_count} missing values in '{col}' with backward fill")
-                
-                else:
-                    print(f"Warning: Unknown imputation strategy '{strategy}' for column '{col}'")
-                    continue
-                
-                cells_imputed += missing_count - df_work[col].isna().sum()
-            
-            except Exception as e:
-                print(f"Warning: Could not impute '{col}' with strategy '{strategy}': {e}")
-    
-    final_rows = len(df_work)
-    final_cols = len(df_work.columns)
-    
-    stats = {
-        'original_rows': original_rows,
-        'final_rows': final_rows,
-        'rows_dropped': rows_dropped,
-        'cols_dropped': cols_dropped,
-        'cells_imputed': cells_imputed
-    }
-    
-    print(f"\nMissing Values Handling Summary:")
-    print(f"  Original rows: {original_rows}, Final rows: {final_rows} (dropped {rows_dropped})")
-    print(f"  Original columns: {original_cols}, Final columns: {final_cols} (dropped {cols_dropped})")
-    print(f"  Cells imputed: {cells_imputed}")
-    
-    return df_work, stats
+    if name not in FILE_CONFIG:
+        print(f"ERROR: Unknown file '{name}'.")
+        return
 
+    cfg = FILE_CONFIG[name]
+    p = cfg["input"]
+
+    if not p.exists():
+        print(f"ERROR: File not found: {p}")
+        return
+
+    print(f"\n{'='*50}\nCleaning (chunked): {name}\n{'='*50}")
+    print(f"  Source: {p}  ({p.stat().st_size / 1e9:.2f} GB)")
+    print(f"  Chunk size: {CHUNK_SIZE:,} rows")
+
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    out = cfg["output"]
+
+    total_in = 0
+    total_out = 0
+    first_chunk = True
+
+    for chunk in iter_json_chunks(p, CHUNK_SIZE):
+        total_in += len(chunk)
+        cleaned = _clean_chunk(chunk, name, cfg)
+        total_out += len(cleaned)
+
+        # Write header only on first chunk
+        cleaned.to_csv(out, mode="w" if first_chunk else "a",
+                       header=first_chunk, index=False, encoding="utf-8")
+        first_chunk = False
+
+    print(f"\n  Done. {total_in:,} rows read -> {total_out:,} rows saved.")
+    print(f"  Saved -> {out}")
+
+
+# ==============================================================================
+# MAIN CLEANING PIPELINE  (standard, full-file)
+# ==============================================================================
+
+def clean_file(name: str) -> pd.DataFrame:
+    """Run the full cleaning pipeline for a named dataset."""
+    if name not in FILE_CONFIG:
+        print(f"ERROR: Unknown file '{name}'. Options: {list(FILE_CONFIG.keys())}")
+        return None
+
+    cfg = FILE_CONFIG[name]
+    print(f"\n{'='*50}\nCleaning: {name}\n{'='*50}")
+
+    df = openfile(cfg["input"])
+    if df is None:
+        return None
+
+    # 1. Standardize column names
+    df = standardize_columns(df)
+
+    # 2. Dataset-specific enrichment
+    if name == "311":
+        source = next((c for c in ["subject", "service_name", "service_notice"]
+                       if c in df.columns), None)
+        if source:
+            df["complaint_type"] = df[source].map(normalize_complaint_type)
+        df = clean_location(df)
+
+    elif name == "yelp_business":
+        if "categories" in df.columns:
+            results = df["categories"].map(normalize_yelp_categories)
+            df["categories_clean"] = results.map(lambda x: x[0])
+            df["broad_category"]   = results.map(lambda x: x[1])
+        df = clean_location(df)
+
+    # 3. Handle missing values
+    df = handle_missing_values(df, drop_rows=cfg["drop_rows"], impute=cfg["impute"])
+
+    # 4. Fill text columns so downstream NLP steps don't break
+    for col in cfg["text_fill"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype("string")
+
+    # 5. Deduplicate
+    df = deduplicate_records(df, subset=[cfg["id_col"]])
+
+    # 6. Save
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(cfg["output"], index=False, encoding="utf-8")
+    print(f"  Saved -> {cfg['output']}  ({len(df):,} rows, {df.shape[1]} cols)")
+
+    return df
+
+
+def run_all(chunked_names: list = None) -> dict:
+    """Clean every raw file. Optionally specify which files to run chunked."""
+    chunked_names = chunked_names or []
+    results = {}
+    for name in FILE_CONFIG:
+        if name in chunked_names:
+            clean_file_chunked(name)
+            results[name] = None  # chunked mode doesn't return a df
+        else:
+            results[name] = clean_file(name)
+    print("\n========== All Cleaning Complete ==========")
+    for name, df in results.items():
+        status = f"{len(df):,} rows" if df is not None else "done (chunked)"
+        print(f"  {name}: {status}")
+    return results
+
+
+# ==============================================================================
+# CLI
+# ==============================================================================
 
 if __name__ == "__main__":
     print("==========================")
