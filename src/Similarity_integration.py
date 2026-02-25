@@ -37,6 +37,7 @@ def main():
     in_311 = os.path.join(project_root, "data", "processed", "311_processed.csv")
     in_yelp = os.path.join(project_root, "data", "processed", "yelp_academic_dataset_business_fully_cleaned.csv")
     out_path = os.path.join(project_root, "data", "processed", "311_yelp_Similarity_integrated.csv")
+    out_path2 = os.path.join(project_root, "data", "processed", "311_yelp_Similarity_integrated_Only_matches.csv")
 
     df311 = pd.read_csv(in_311)
     yelp = pd.read_csv(in_yelp)
@@ -45,7 +46,7 @@ def main():
     missing_yelp = required_yelp - set(yelp.columns)
     if missing_yelp:
         raise ValueError(f"Yelp file missing columns: {missing_yelp}")
-
+    yelp = yelp[yelp["city"].str.lower().str.strip() == "philadelphia"].copy()
     text_col_311 = pick_311_text_col(df311)
 
     df311 = df311.copy()
@@ -97,11 +98,11 @@ def main():
         how="left",
         suffixes=("", "_yelp"),
     ).drop(columns=["business_id"], errors="ignore")
-
     out.to_csv(out_path, index=False)
-
     print("Saved:", out_path)
     print("Match rate:", out["matched_business_id"].notna().mean())
+    out = out[out["matched_business_id"].notna()].copy()
+    out.to_csv(out_path2, index=False)
 
 if __name__ == "__main__":  
     main()
