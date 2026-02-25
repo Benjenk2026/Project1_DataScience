@@ -5,9 +5,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 import os
 MIN_SIMILARITY = 0.15
-TOPK_NEAREST = 80
-
-
 
 def normalize_text(x):
     if pd.isna(x):
