@@ -9,3 +9,4 @@ nltk==3.9.2
 joblib==1.5.3
 openpyxl==3.1.5
 xlrd==2.0.1
+seaborn==0.13.2
