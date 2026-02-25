@@ -1,5 +1,9 @@
 # Data Cleaning Utilities
 
+## Links to Data
+* *Raw and Matched Data* /https://falconbgsu-my.sharepoint.com/personal/rhannam_bgsu_edu/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Frhannam%5Fbgsu%5Fedu%2FDocuments%2FCS4360%5FProject1%5FData&ga=1
+* *Enriched Data* /https://falconbgsu-my.sharepoint.com/my?id=%2Fpersonal%2Fttbaum%5Fbgsu%5Fedu%2FDocuments%2FProject1%5Fcategorized%5Fdata&ga=1
+
 ## Overview
 This project includes data cleaning and processing utilities in `src/cleaning.py` to standardize and deduplicate data from multiple formats (JSON, Excel, CSV).
 
