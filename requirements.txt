@@ -1,0 +1,12 @@
+numpy==2.4.1
+pandas==2.3.3
+scikit-learn==1.8.0
+folium==0.20.0
+matplotlib==3.10.8
+textblob==0.19.0
+vaderSentiment==3.3.2
+nltk==3.9.2
+joblib==1.5.3
+openpyxl==3.1.5
+xlrd==2.0.1
+seaborn==0.13.2

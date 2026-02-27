@@ -1,0 +1,8 @@
+Complaint Type Clustering Metrics
+========================================
+source=both
+method=kmeans
+clusters=6
+rows_used=120000
+tfidf_features=946
+silhouette=0.49658092876463017
